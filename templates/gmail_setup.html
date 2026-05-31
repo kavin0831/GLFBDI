@@ -140,9 +140,21 @@
           these requirements:
           <ul style="margin:8px 0 0 0;padding-left:22px;line-height:1.7">
             <li><strong>Client type</strong> must be <em>Web application</em> (not Desktop) so it accepts an HTTPS redirect</li>
-            <li>Under <em>Authorized redirect URIs</em>, add exactly this URL:</li>
+            <li>Under <em>Authorized redirect URIs</em>, paste this <strong>exact</strong> URL (copy with the button):</li>
           </ul>
-          <code style="display:block;background:#fff;padding:6px 10px;border-radius:4px;border:1px solid #d1d5db;margin-top:8px;font-size:12px;word-break:break-all">{{ request.url_for('gmail_oauth_callback') }}</code>
+          <div style="display:flex;gap:8px;align-items:stretch;margin-top:8px">
+            <code id="redirect-uri-box" style="flex:1;background:#fff;padding:8px 12px;border-radius:4px;border:1px solid #d1d5db;font-size:12px;word-break:break-all;font-family:monospace">{{ oauth_redirect_uri }}</code>
+            <button type="button" class="btn btn-outline btn-sm" onclick="
+              navigator.clipboard.writeText(document.getElementById('redirect-uri-box').innerText);
+              this.innerText = '✓ Copied'; setTimeout(() => this.innerText = 'Copy', 1500);
+            ">Copy</button>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:#6b7280">
+            If you get <code>Error 400: redirect_uri_mismatch</code> from Google, your
+            client's registered URI doesn't match the string above. Fix it in
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#1a73e8">GCP&nbsp;Credentials</a>,
+            wait ~30s for Google to propagate, then click <em>Sign in with Google</em> again.
+          </div>
         </div>
 
         {% if token_exists %}

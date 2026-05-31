@@ -384,6 +384,9 @@ async def gmail_setup_page(request: Request):
         "request": request, "creds_exists": creds_exists, "token_exists": token_exists,
         "creds_path": cfg.gmail_credentials_file,
         "headless": _is_headless(),
+        # Pass the exact URI we will send to Google so the user can copy/paste it
+        # verbatim into Google Cloud Console → Authorized redirect URIs.
+        "oauth_redirect_uri": _gmail_oauth_redirect_uri(),
     })
 
 
