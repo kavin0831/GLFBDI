@@ -86,7 +86,7 @@ def decrypt_value(ciphertext: str) -> str:
     return f.decrypt(ciphertext.encode()).decode()
 
 
-_ENCRYPT_FIELDS = frozenset(["fusion_password"])
+_ENCRYPT_FIELDS = frozenset(["fusion_password", "gmail_app_password"])
 
 
 # ── File hashing ──────────────────────────────────────────────────────────────
@@ -359,6 +359,9 @@ _DEFAULT_SETTINGS = {
     "gmail_token_file":        "config/gmail_token.json",
     "gmail_poll_seconds":      60,
     "gmail_subject_filter":    "journal upload",
+    # App Password mode (no OAuth) — set these via /settings
+    "gmail_user":              "",
+    "gmail_app_password":      "",
     "notification_email":      "",
     "mapping_threshold":       0.70,
     "ess_poll_seconds":        5,

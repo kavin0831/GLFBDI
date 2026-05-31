@@ -106,6 +106,34 @@ def _gmail_poll_loop():
 def _poll_gmail_once():
     if not gmail_available():
         return
+    cfg = get_settings()
+
+    # Prefer App Password (IMAP) when configured — works on any host
+    try:
+        from services.gmail_imap import (app_password_available,
+                                          fetch_unprocessed_messages as _imap_fetch,
+                                          mark_processed as _imap_mark)
+        if app_password_available():
+            messages = _imap_fetch()
+            if messages:
+                logger.info("IMAP poll: %d unprocessed journal email(s)", len(messages))
+            for msg in messages:
+                try:
+                    for att in msg["attachments"]:
+                        r_id = str(uuid.uuid4())
+                        store_uploaded_file(r_id, att["file_name"], att["file_bytes"])
+                        _create_and_process(r_id, msg["message_id"], msg["sender"],
+                                            msg["subject"], att["file_name"],
+                                            att["file_type"], att["file_size_bytes"], cfg)
+                    _imap_mark(msg["imap_uid"])
+                except Exception as e:
+                    logger.error("IMAP processing failed for %s: %s",
+                                 msg.get("message_id"), e)
+            return
+    except Exception as e:
+        logger.warning("IMAP poll path failed, falling back to OAuth: %s", e)
+
+    # Fallback: OAuth Gmail API path (only used when App Password isn't set)
     from services.gmail_service import (
         download_attachments, fetch_unprocessed_emails,
         get_gmail_service, mark_failed, mark_processed,
@@ -114,8 +142,7 @@ def _poll_gmail_once():
     messages = fetch_unprocessed_emails(service)
     if not messages:
         return
-    logger.info("Gmail: found %d unprocessed journal email(s)", len(messages))
-    cfg = get_settings()
+    logger.info("Gmail OAuth: %d unprocessed journal email(s)", len(messages))
     for msg in messages:
         try:
             files = download_attachments(service, msg["id"])
@@ -125,7 +152,6 @@ def _poll_gmail_once():
                 continue
             for att in files:
                 r_id = str(uuid.uuid4())
-                # Store the attachment bytes in MongoDB — no disk write
                 store_uploaded_file(r_id, att["file_name"], att["file_bytes"])
                 _create_and_process(r_id, msg["id"], att["sender"], att["subject"],
                                     att["file_name"], att["file_type"],
@@ -338,6 +364,8 @@ async def save_settings(
     mapping_threshold:     float = Form(0.70),
     ess_max_minutes:       int = Form(30),
     app_base_url:          str = Form(""),
+    gmail_user:            str = Form(""),
+    gmail_app_password:    str = Form(""),
 ):
     with SessionLocal() as db:
         cfg = db.get(AppSettings, 1)
@@ -353,6 +381,11 @@ async def save_settings(
         cfg.mapping_threshold      = mapping_threshold
         cfg.ess_max_minutes        = ess_max_minutes
         cfg.app_base_url           = app_base_url
+        cfg.gmail_user             = gmail_user
+        # Only overwrite the password if something was typed; empty form field
+        # means "keep the existing encrypted value"
+        if gmail_app_password:
+            cfg.gmail_app_password = gmail_app_password
         cfg.updated_at             = datetime.now(timezone.utc)
         db.commit()
     return RedirectResponse("/settings?msg=Settings+saved+successfully", status_code=303)
@@ -363,6 +396,31 @@ async def test_fusion():
     cfg = get_settings()
     result = test_connection(cfg)
     return result
+
+
+@app.post("/settings/test-gmail")
+async def test_gmail_app_password():
+    """Try logging in to Gmail IMAP using the configured App Password."""
+    from services.gmail_imap import test_app_password
+    ok, msg = test_app_password()
+    return {"ok": ok, "message": msg}
+
+
+@app.post("/settings/save-gmail-password")
+async def save_gmail_password(
+    gmail_user:         str = Form(...),
+    gmail_app_password: str = Form(...),
+):
+    """Save only the App Password fields, leaving other settings untouched."""
+    with SessionLocal() as db:
+        cfg = db.get(AppSettings, 1)
+        cfg.gmail_user = gmail_user.strip()
+        # Strip spaces — Google copies the App Password with spaces in it
+        if gmail_app_password.strip():
+            cfg.gmail_app_password = gmail_app_password.replace(" ", "").strip()
+        db.commit()
+    return RedirectResponse("/gmail-setup?msg=Gmail+App+Password+saved+%E2%80%94+click+Test+Connection+to+verify",
+                             status_code=303)
 
 
 # ── Gmail setup ───────────────────────────────────────────────────────────────

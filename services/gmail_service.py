@@ -87,7 +87,14 @@ def get_gmail_service():
 
 
 def gmail_available() -> bool:
-    """Check if Gmail credentials exist on disk or in MongoDB."""
+    """Check if any Gmail integration is configured — App Password OR OAuth."""
+    try:
+        # App Password mode (preferred for HF Spaces / headless deploys)
+        from services.gmail_imap import app_password_available
+        if app_password_available():
+            return True
+    except Exception:
+        pass
     try:
         cfg = get_settings()
         if Path(cfg.gmail_credentials_file).exists():
@@ -95,6 +102,22 @@ def gmail_available() -> bool:
         return get_secure_file("gmail_credentials") is not None
     except Exception:
         return False
+
+
+def send_email(to: str, subject: str, html: str,
+               attachments: list[str] | None = None) -> bool:
+    """
+    Send a notification email. Routes through Gmail App Password (SMTP) if
+    configured, otherwise falls back to OAuth Gmail API.
+    """
+    try:
+        from services.gmail_imap import app_password_available, send_email as _smtp_send
+        if app_password_available():
+            return _smtp_send(to, subject, html, attachments)
+    except Exception as e:
+        logger.warning("App-password send failed, will try OAuth: %s", e)
+    # Fall through to original OAuth path defined below
+    return _send_email_oauth(to, subject, html, attachments)
 
 
 def _get_or_create_label(service, name: str) -> str:
@@ -165,7 +188,10 @@ def mark_failed(service, message_id: str):
         body={"addLabelIds": [label_id]}).execute()
 
 
-def send_email(to: str, subject: str, html: str, attachments: list[str] | None = None) -> bool:
+def _send_email_oauth(to: str, subject: str, html: str,
+                      attachments: list[str] | None = None) -> bool:
+    """OAuth-mode send (original implementation). Called from the top-level
+    send_email() above only when App Password isn't configured."""
     try:
         service = get_gmail_service()
         msg = MIMEMultipart("mixed")
@@ -181,8 +207,8 @@ def send_email(to: str, subject: str, html: str, attachments: list[str] | None =
                 msg.attach(part)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
-        logger.info("Email sent to %s: %s", to, subject[:60])
+        logger.info("Email sent to %s via OAuth: %s", to, subject[:60])
         return True
     except Exception as e:
-        logger.error("Email send failed: %s", e)
+        logger.error("OAuth email send failed: %s", e)
         return False
