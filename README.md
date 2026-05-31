@@ -1,3 +1,13 @@
+---
+title: GLFBDI
+emoji: 🌐
+colorFrom: red
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # GLFBDI — Oracle Fusion GL FBDI Automation
 
 A FastAPI app that automates Oracle Fusion General Ledger journal imports via the

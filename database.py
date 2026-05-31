@@ -52,13 +52,19 @@ def _get_fernet():
             if _fernet_inst is None:
                 try:
                     from cryptography.fernet import Fernet
-                    _KEY_FILE_PATH.parent.mkdir(exist_ok=True)
-                    if _KEY_FILE_PATH.exists():
-                        key = _KEY_FILE_PATH.read_bytes().strip()
+                    # Priority: env var (HF Spaces / Docker) > local key file > generate new
+                    env_key = os.environ.get("FERNET_KEY", "").strip()
+                    if env_key:
+                        key = env_key.encode()
+                        logger.info("Using Fernet key from FERNET_KEY env var")
                     else:
-                        key = Fernet.generate_key()
-                        _KEY_FILE_PATH.write_bytes(key)
-                        logger.info("Generated new encryption key: %s", _KEY_FILE_PATH)
+                        _KEY_FILE_PATH.parent.mkdir(exist_ok=True)
+                        if _KEY_FILE_PATH.exists():
+                            key = _KEY_FILE_PATH.read_bytes().strip()
+                        else:
+                            key = Fernet.generate_key()
+                            _KEY_FILE_PATH.write_bytes(key)
+                            logger.info("Generated new encryption key: %s", _KEY_FILE_PATH)
                     _fernet_inst = Fernet(key)
                 except ImportError:
                     logger.warning("cryptography not installed — encryption disabled")
