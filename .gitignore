@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Local environment / secrets — NEVER push these
+.env
+.env.local
+*.key
+config/secret.key
+config/gmail_credentials.json
+config/gmail_token.json
+
+# Runtime data & logs
+storage/logs/*.log
+storage/uploads/
+storage/fbdi/
+
+# Legacy SQLite files
+*.db
+*.db-shm
+*.db-wal
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Build / dist
+build/
+dist/
+*.egg-info/

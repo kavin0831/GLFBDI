@@ -1,0 +1,388 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Request {{ req.id[:8] }} — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}
+  <a href="/" style="color:#9ca3af;text-decoration:none;font-weight:400">Dashboard</a>
+  <span style="color:#d1d5db;margin:0 8px">/</span>
+  Request {{ req.id[:8] }}…
+{% endblock %}
+
+{% block topbar_actions %}
+  {% if req.status == 'FAILED' %}
+    <button class="btn btn-primary btn-sm" onclick="retryRequest('{{ req.id }}', this)">&#8635; Retry</button>
+  {% endif %}
+  <a href="/" class="btn btn-secondary btn-sm">&#8592; Back</a>
+{% endblock %}
+
+{% block content %}
+
+<div style="display:grid;grid-template-columns:1fr 360px;gap:24px;align-items:start">
+
+  <!-- Left column -->
+  <div>
+
+    <!-- Status card -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#128203; Request Details</h2>
+        {% set s = req.status %}
+        {% if s == 'SUCCEEDED' %}
+          <span class="badge badge-success">&#10003; SUCCEEDED</span>
+        {% elif s == 'FAILED' %}
+          <span class="badge badge-failed">&#10007; FAILED</span>
+        {% elif s in ('RECEIVED','PROCESSING') %}
+          <span class="badge badge-running" id="status-badge">&#9203; {{ s }}</span>
+        {% else %}
+          <span class="badge badge-default">{{ s }}</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+
+        <div class="info-row">
+          <div class="info-key">Request ID</div>
+          <div class="info-val" style="font-family:monospace;font-size:12px">{{ req.id }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">File Name</div>
+          <div class="info-val fw-bold">{{ req.file_name or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">File Type</div>
+          <div class="info-val">{{ req.file_type | upper if req.file_type else '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">File Size</div>
+          <div class="info-val">
+            {% if req.file_size_bytes %}
+              {% if req.file_size_bytes > 1048576 %}
+                {{ "%.1f"|format(req.file_size_bytes/1048576) }} MB
+              {% else %}
+                {{ "%.1f"|format(req.file_size_bytes/1024) }} KB
+              {% endif %}
+            {% else %}—{% endif %}
+          </div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Source</div>
+          <div class="info-val">{{ req.sender_email or '—' }}</div>
+        </div>
+        {% if req.email_subject %}
+        <div class="info-row">
+          <div class="info-key">Email Subject</div>
+          <div class="info-val">{{ req.email_subject }}</div>
+        </div>
+        {% endif %}
+        <div class="info-row">
+          <div class="info-key">Submitted</div>
+          <div class="info-val">{{ req.created_at.strftime('%d %b %Y %H:%M:%S') if req.created_at else '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Last Updated</div>
+          <div class="info-val">{{ req.updated_at.strftime('%d %b %Y %H:%M:%S') if req.updated_at else '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Current Stage</div>
+          <div class="info-val"><span class="pill">{{ req.current_stage or '—' }}</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Journal params -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#128196; Journal Parameters</h2>
+      </div>
+      <div class="card-body">
+        <div class="info-row">
+          <div class="info-key">Ledger</div>
+          <div class="info-val">{{ req.ledger_name or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Period</div>
+          <div class="info-val">{{ req.period_name or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Accounting Date</div>
+          <div class="info-val">{{ req.accounting_date or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Journal Name</div>
+          <div class="info-val">{{ req.journal_name or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Currency</div>
+          <div class="info-val">{{ req.currency_code or '—' }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">Total Rows</div>
+          <div class="info-val">{{ req.total_rows or '—' }}</div>
+        </div>
+        {% if req.bad_rows %}
+        <div class="info-row">
+          <div class="info-key">Bad Rows</div>
+          <div class="info-val text-danger fw-bold">{{ req.bad_rows }}</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Oracle Fusion -->
+    {% if req.fusion_request_id %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#9729; Oracle Fusion</h2>
+      </div>
+      <div class="card-body">
+        <div class="info-row">
+          <div class="info-key">ESS Request ID</div>
+          <div class="info-val" style="font-family:monospace">{{ req.fusion_request_id }}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-key">ESS Status</div>
+          <div class="info-val">
+            {% set es = req.ess_final_status %}
+            {% if es == 'SUCCEEDED' %}
+              <span class="badge badge-success">&#10003; {{ es }}</span>
+            {% elif es in ('ERROR','FAILED','CANCELLED','BLOCKED') %}
+              <span class="badge badge-failed">&#10007; {{ es }}</span>
+            {% elif es %}
+              <span class="badge badge-running">&#9203; {{ es }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </div>
+        </div>
+        {% if req.approval_status and req.approval_status != 'NOT_REQUIRED' %}
+        <div class="info-row">
+          <div class="info-key">Approval</div>
+          <div class="info-val">
+            {% if req.approval_status == 'APPROVED' %}
+              <span class="badge badge-success">&#10003; APPROVED</span>
+            {% elif req.approval_status == 'REJECTED' %}
+              <span class="badge badge-failed">&#10007; REJECTED</span>
+            {% else %}
+              <span class="badge badge-running">&#9203; PENDING</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+        {% if req.approval_status == 'PENDING' and req.approval_token %}
+        <div class="info-row">
+          <div class="info-key">Action</div>
+          <div class="info-val">
+            <div class="d-flex gap-2 flex-wrap">
+              <a href="/approve/{{ req.approval_token }}?action=continue"
+                 class="btn btn-success btn-sm"
+                 onclick="return confirm('Import {{ req.good_rows }} good rows to Oracle Fusion?')">
+                &#10003; Approve Import
+              </a>
+              <a href="/approve/{{ req.approval_token }}?action=reject"
+                 class="btn btn-danger btn-sm"
+                 onclick="return confirm('Reject and cancel this import?')">
+                &#10007; Reject
+              </a>
+            </div>
+            <div class="form-hint mt-1">
+              {{ req.good_rows }} good rows will be imported. {{ req.bad_rows }} bad rows will be skipped.
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Error -->
+    {% if req.error_message %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title" style="color:#c0392b">&#9888; Error</h2>
+      </div>
+      <div class="card-body">
+        <div class="log-box">{{ req.error_message }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Stop reason -->
+    {% if req.stop_reason and req.stop_reason != req.error_message %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title" style="color:#c0392b">&#9888; Stop Reason</h2>
+      </div>
+      <div class="card-body">
+        <div class="log-box">{{ req.stop_reason }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Process Logs -->
+    {% if process_logs %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#128221; Process Logs</h2>
+        <span class="badge badge-default">{{ process_logs | length }} entries</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div style="max-height:360px;overflow-y:auto;font-family:monospace;font-size:12px">
+          {% for entry in process_logs %}
+          <div style="display:flex;gap:10px;padding:5px 14px;border-bottom:1px solid #f3f4f6;
+            {% if entry.level == 'ERROR' %}background:#fff5f5{% elif entry.level == 'WARNING' %}background:#fffbeb{% endif %}">
+            <span style="color:#9ca3af;white-space:nowrap;flex-shrink:0">{{ entry.ts[:19].replace('T',' ') if entry.ts else '' }}</span>
+            <span style="font-weight:600;flex-shrink:0;
+              {% if entry.level == 'ERROR' %}color:#dc2626{% elif entry.level == 'WARNING' %}color:#d97706{% elif entry.level == 'INFO' %}color:#2563eb{% else %}color:#6b7280{% endif %}">
+              {{ entry.level }}
+            </span>
+            <span style="color:#374151;word-break:break-word">{{ entry.msg }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- Right column: downloads + mappings -->
+  <div>
+
+    <!-- Downloads -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#128229; Downloads</h2>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          {% if req.fbdi_zip_path %}
+            <a href="/download/{{ req.id }}/zip" class="btn btn-success" style="width:100%;text-align:left">
+              &#128230; GlInterface.zip (FBDI)
+            </a>
+          {% endif %}
+          {% if req.fbdi_csv_path %}
+            <a href="/download/{{ req.id }}/csv" class="btn btn-outline" style="width:100%;text-align:left">
+              &#128196; GlInterface.csv
+            </a>
+          {% endif %}
+          {% if req.bad_data_csv_path %}
+            <a href="/download/{{ req.id }}/bad" class="btn btn-outline" style="color:#c0392b;border-color:#f5c6cb;width:100%;text-align:left">
+              &#9888; bad_data.csv ({{ req.bad_rows or '' }} rows)
+            </a>
+          {% endif %}
+          {% if req.ess_log_path %}
+            <a href="/download/{{ req.id }}/log" class="btn btn-outline" style="width:100%;text-align:left">
+              &#128196; ESS Log ZIP
+            </a>
+          {% endif %}
+          {% if not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
+            <div class="text-muted small">No files available yet.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Stored log files in MongoDB -->
+    {% if log_files %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title">&#128196; Log Files</h2>
+        <span class="badge badge-default">{{ log_files | length }}</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        {% for key, meta in log_files.items() %}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid #f3f4f6;font-size:12px">
+          <div style="font-weight:600;color:#374151">{{ meta.filename }}</div>
+          <div style="flex-shrink:0;margin-left:10px;text-align:right;color:#6b7280">
+            {% if meta.size_bytes %}
+              {% if meta.size_bytes > 1048576 %}{{ "%.1f"|format(meta.size_bytes/1048576) }} MB
+              {% else %}{{ "%.0f"|format(meta.size_bytes/1024) }} KB{% endif %}
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Field mappings -->
+    {% if req.mapping_json %}
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">&#128257; Field Mappings</h2>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Source Column</th>
+                <th>Oracle GL Field</th>
+                <th>Conf</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for m in req.mapping_json %}
+              <tr>
+                <td style="font-size:12px;font-family:monospace">{{ m.source_field }}</td>
+                <td style="font-size:12px">{{ m.target_field or '—' }}</td>
+                <td>
+                  {% if m.confidence %}
+                    {% set pct = (m.confidence * 100) | int %}
+                    {% if pct >= 80 %}
+                      <span class="badge badge-success">{{ pct }}%</span>
+                    {% elif pct >= 60 %}
+                      <span class="badge badge-warning">{{ pct }}%</span>
+                    {% else %}
+                      <span class="badge badge-failed">{{ pct }}%</span>
+                    {% endif %}
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function retryRequest(id, btn) {
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Queuing…';
+  fetch('/api/retry/' + id, {method:'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = orig; }
+      else { setTimeout(() => location.reload(), 600); }
+    })
+    .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+</script>
+{% if req.status in ('RECEIVED', 'PROCESSING') %}
+<script>
+(function poll() {
+  fetch('/api/request/{{ req.id }}/status')
+    .then(r => r.json())
+    .then(data => {
+      var badge = document.getElementById('status-badge');
+      if (badge) badge.textContent = '⏱ ' + data.status + ' — ' + (data.stage || '');
+      if (data.status === 'SUCCEEDED' || data.status === 'FAILED') {
+        location.reload();
+      } else {
+        setTimeout(poll, 5000);
+      }
+    })
+    .catch(() => setTimeout(poll, 8000));
+})();
+</script>
+{% endif %}
+{% endblock %}

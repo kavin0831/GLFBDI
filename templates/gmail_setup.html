@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% set active = "gmail" %}
+
+{% block title %}Gmail Setup — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}Gmail Setup{% endblock %}
+
+{% block topbar_actions %}
+  <a href="/settings" class="btn btn-secondary btn-sm">&#9881; Settings</a>
+{% endblock %}
+
+{% block content %}
+{% set msg = request.query_params.get('msg', '') %}
+{% set err = request.query_params.get('err', '') %}
+
+<div style="max-width:800px;margin:0 auto">
+
+{% if msg %}
+  <div class="alert alert-success" style="margin-bottom:20px">&#10003; {{ msg }}</div>
+{% endif %}
+{% if err %}
+  <div class="alert alert-error" style="margin-bottom:20px">&#10007; {{ err }}</div>
+{% endif %}
+
+<!-- Status overview -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h2 class="card-title">&#128140; Gmail Integration Status</h2>
+    {% if creds_exists and token_exists %}
+      <span class="badge badge-success">&#9679; Active</span>
+    {% else %}
+      <span class="badge badge-default">&#9679; Inactive</span>
+    {% endif %}
+  </div>
+  <div class="card-body" style="padding:0">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr">
+      <div style="padding:18px 22px;border-right:1px solid #f0f2f5;text-align:center">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#9ca3af;margin-bottom:8px">credentials.json</div>
+        {% if creds_exists %}
+          <span class="badge badge-success" style="font-size:13px;padding:5px 14px">&#10003; Found</span>
+          <div style="font-size:11px;color:#9ca3af;margin-top:6px;word-break:break-all">{{ creds_path }}</div>
+        {% else %}
+          <span class="badge badge-failed" style="font-size:13px;padding:5px 14px">&#10007; Missing</span>
+        {% endif %}
+      </div>
+      <div style="padding:18px 22px;border-right:1px solid #f0f2f5;text-align:center">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#9ca3af;margin-bottom:8px">OAuth Token</div>
+        {% if token_exists %}
+          <span class="badge badge-success" style="font-size:13px;padding:5px 14px">&#10003; Authorized</span>
+        {% else %}
+          <span class="badge badge-failed" style="font-size:13px;padding:5px 14px">&#10007; Not Authorized</span>
+        {% endif %}
+      </div>
+      <div style="padding:18px 22px;text-align:center">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#9ca3af;margin-bottom:8px">Polling</div>
+        {% if creds_exists and token_exists %}
+          <span class="badge badge-success" style="font-size:13px;padding:5px 14px">&#9679; Active</span>
+        {% else %}
+          <span class="badge badge-default" style="font-size:13px;padding:5px 14px">&#9679; Inactive</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Steps -->
+<div style="display:flex;flex-direction:column;gap:16px">
+
+  <!-- Step 1 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:10px">
+        <span style="background:#e8f0fe;color:#1a73e8;border-radius:50%;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">1</span>
+        Get credentials.json from Google Cloud Console
+      </h2>
+    </div>
+    <div class="card-body">
+      <ol style="line-height:2;font-size:13.5px;color:#374151;padding-left:22px;margin:0">
+        <li>Go to <strong>console.cloud.google.com</strong></li>
+        <li>Create or select a project &rarr; <strong>APIs &amp; Services &rarr; Library</strong></li>
+        <li>Search for <strong>Gmail API</strong> and click <strong>Enable</strong></li>
+        <li>Go to <strong>OAuth consent screen</strong> &rarr; External &rarr; add scope <code style="background:#f0f2f5;padding:1px 6px;border-radius:4px;font-size:12px">gmail.modify</code> &rarr; add your Gmail as test user</li>
+        <li>Go to <strong>Credentials &rarr; Create OAuth Client ID</strong> &rarr; Desktop App &rarr; <strong>Download JSON</strong></li>
+      </ol>
+      <div class="alert alert-warning mt-3" style="margin-bottom:0;font-size:13px">
+        <strong>Note:</strong> The OAuth flow opens a browser on the server machine to authorize access.
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:10px">
+        <span style="background:{% if creds_exists %}#e6f4ea;color:#1e7e34{% else %}#e8f0fe;color:#1a73e8{% endif %};border-radius:50%;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">2</span>
+        Upload credentials.json
+        {% if creds_exists %}<span class="badge badge-success" style="margin-left:4px">&#10003; Done</span>{% endif %}
+      </h2>
+    </div>
+    <div class="card-body">
+      <form method="POST" action="/gmail-setup/upload-credentials" enctype="multipart/form-data">
+        <div style="display:flex;gap:12px;align-items:stretch">
+          <input type="file" name="file" accept=".json" required
+                 style="flex:1;border:1.5px solid #d1d5db;border-radius:8px;padding:9px 13px;font-size:13.5px;color:#374151;background:#fff;min-width:0">
+          <button type="submit" class="btn btn-primary" style="flex-shrink:0;white-space:nowrap">
+            &#128228; Upload
+          </button>
+        </div>
+        <div class="form-hint mt-2">Will be saved as <code style="background:#f0f2f5;padding:1px 5px;border-radius:3px">{{ creds_path }}</code></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title" style="display:flex;align-items:center;gap:10px">
+        <span style="background:{% if token_exists %}#e6f4ea;color:#1e7e34{% else %}#e8f0fe;color:#1a73e8{% endif %};border-radius:50%;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">3</span>
+        Authorize Gmail Access
+        {% if token_exists %}<span class="badge badge-success" style="margin-left:4px">&#10003; Done</span>{% endif %}
+      </h2>
+    </div>
+    <div class="card-body">
+      {% if not creds_exists %}
+        <div class="alert alert-warning" style="margin-bottom:0">Upload credentials.json first (Step 2).</div>
+      {% else %}
+        <p style="font-size:13.5px;color:#374151;margin-bottom:16px;line-height:1.6">
+          Click below to open a browser window on this machine for Google OAuth2 consent.
+          Sign in with the Gmail account you want to monitor and grant access.
+        </p>
+        <form method="POST" action="/gmail-setup/authorize">
+          <button type="submit" class="btn btn-success">
+            &#9654; Authorize Gmail Access
+          </button>
+        </form>
+        {% if token_exists %}
+          <div class="alert alert-info mt-3" style="margin-bottom:0;font-size:13px">
+            Token already exists. Click above to re-authorize if it has expired.
+          </div>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Connected panel -->
+  {% if creds_exists and token_exists %}
+  <div class="card" style="border-color:#c3e6cb">
+    <div class="card-header" style="background:#f0faf2">
+      <h2 class="card-title" style="color:#1e7e34">&#9989; Gmail Connected — Polling Active</h2>
+    </div>
+    <div class="card-body">
+      <p style="font-size:13.5px;color:#374151;margin-bottom:16px;line-height:1.6">
+        Emails matching the subject filter in Settings are automatically processed and imported into Oracle Fusion.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" onclick="pollNow(this)">&#128260; Poll Gmail Now</button>
+        <a href="/settings" class="btn btn-secondary">&#9881; Configure Subject Filter</a>
+        <span id="poll-msg" style="font-size:13px;color:#1e7e34;display:none"></span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function pollNow(btn) {
+  var msg = document.getElementById('poll-msg');
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Checking&hellip;';
+  fetch('/api/poll-now', {method:'POST'})
+    .then(r => r.json())
+    .then(() => {
+      btn.innerHTML = '&#10003; Triggered';
+      if (msg) { msg.style.display = 'inline'; msg.textContent = 'Gmail check triggered — check dashboard for new jobs.'; }
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 3000);
+    })
+    .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+</script>
+{% endblock %}

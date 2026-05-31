@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% set active = "settings" %}
+
+{% block title %}Settings — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}Settings{% endblock %}
+
+{% block content %}
+
+{% if msg %}
+  <div class="alert alert-success">&#10003; {{ msg }}</div>
+{% endif %}
+
+{% if test_result %}
+  {% if 'ok' in test_result or 'success' in test_result.lower() %}
+    <div class="alert alert-success">&#10003; {{ test_result }}</div>
+  {% else %}
+    <div class="alert alert-error">&#10007; {{ test_result }}</div>
+  {% endif %}
+{% endif %}
+
+<form method="POST" action="/settings/save" id="settings-form">
+
+  <div class="settings-grid">
+
+    <!-- Oracle Fusion -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">&#9729; Oracle Fusion Connection</h2>
+      </div>
+      <div class="card-body">
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_url">Fusion URL <span class="required">*</span></label>
+          <input type="url" class="form-control" id="fusion_url" name="fusion_url"
+                 value="{{ cfg.fusion_url }}" required
+                 placeholder="https://fa-xxxx.oraclecloud.com">
+          <div class="form-hint">Your Oracle Fusion host URL (no trailing slash)</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_username">Username <span class="required">*</span></label>
+          <input type="text" class="form-control" id="fusion_username" name="fusion_username"
+                 value="{{ cfg.fusion_username }}" required autocomplete="username">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_password">Password <span class="required">*</span></label>
+          <input type="password" class="form-control" id="fusion_password" name="fusion_password"
+                 value="{{ cfg.fusion_password }}" required autocomplete="current-password">
+          <div class="form-hint">Stored in local SQLite (not transmitted elsewhere)</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_ledger_name">Default Ledger Name <span class="required">*</span></label>
+          <input type="text" class="form-control" id="fusion_ledger_name" name="fusion_ledger_name"
+                 value="{{ cfg.fusion_ledger_name }}" required
+                 placeholder="US Primary Ledger">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_document_account">Document Account <span class="required">*</span></label>
+          <input type="text" class="form-control" id="fusion_document_account" name="fusion_document_account"
+                 value="{{ cfg.fusion_document_account }}" required>
+          <div class="form-hint">e.g. fin$/generalLedger$/import$</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="fusion_job_name">ESS Job Name</label>
+          <input type="text" class="form-control" id="fusion_job_name" name="fusion_job_name"
+                 value="{{ cfg.fusion_job_name }}"
+                 placeholder="oracle/apps/ess/financials/commonModules/shared/common/interfaceLoader/InterfaceLoaderController">
+        </div>
+
+        <!-- Test connection -->
+        <div style="margin-top:8px">
+          <button type="button" class="btn btn-outline" id="test-btn"
+                  onclick="testConnection()">
+            &#9654; Test Connection
+          </button>
+          <span id="test-result" style="margin-left:12px;font-size:13px"></span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Gmail & Notifications -->
+    <div>
+
+      <div class="card mb-3">
+        <div class="card-header">
+          <h2 class="card-title">&#128140; Gmail &amp; Notifications</h2>
+        </div>
+        <div class="card-body">
+
+          <div class="form-group">
+            <label class="form-label" for="gmail_subject_filter">Subject Filter</label>
+            <input type="text" class="form-control" id="gmail_subject_filter" name="gmail_subject_filter"
+                   value="{{ cfg.gmail_subject_filter }}"
+                   placeholder="GL Journal">
+            <div class="form-hint">Only emails with this keyword in subject are processed</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="notification_email">Notification Email <span class="required">*</span></label>
+            <input type="email" class="form-control" id="notification_email" name="notification_email"
+                   value="{{ cfg.notification_email }}" required
+                   placeholder="you@example.com">
+            <div class="form-hint">Success/failure notifications are sent here</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="gmail_poll_seconds">Gmail Poll Interval (seconds)</label>
+            <input type="number" class="form-control" id="gmail_poll_seconds" name="gmail_poll_seconds"
+                   value="{{ cfg.gmail_poll_seconds }}" min="10" max="3600">
+          </div>
+
+          <div style="margin-top:4px">
+            <a href="/gmail-setup" class="btn btn-outline btn-sm">&#9881; Gmail OAuth Setup &#8594;</a>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Processing -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">&#9881; Processing Options</h2>
+        </div>
+        <div class="card-body">
+
+          <div class="form-group">
+            <label class="form-label" for="mapping_threshold">Mapping Confidence Threshold</label>
+            <input type="number" class="form-control" id="mapping_threshold" name="mapping_threshold"
+                   value="{{ cfg.mapping_threshold }}" min="0.1" max="1.0" step="0.05">
+            <div class="form-hint">Columns below this confidence are skipped (0.0–1.0, default 0.70)</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="ess_max_minutes">ESS Max Poll Time (minutes)</label>
+            <input type="number" class="form-control" id="ess_max_minutes" name="ess_max_minutes"
+                   value="{{ cfg.ess_max_minutes }}" min="5" max="120">
+            <div class="form-hint">How long to wait for Oracle import job to complete</div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- Save button -->
+  <div style="margin-top:24px;display:flex;gap:12px">
+    <button type="submit" class="btn btn-primary">&#128190; Save Settings</button>
+    <a href="/" class="btn btn-secondary">Cancel</a>
+  </div>
+
+</form>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function testConnection() {
+  var btn = document.getElementById('test-btn');
+  var res = document.getElementById('test-result');
+  btn.disabled = true;
+  btn.textContent = '⏱ Testing…';
+  res.textContent = '';
+
+  // Collect current form values
+  var url      = document.getElementById('fusion_url').value;
+  var user     = document.getElementById('fusion_username').value;
+  var pass     = document.getElementById('fusion_password').value;
+  var ledger   = document.getElementById('fusion_ledger_name').value;
+  var docacct  = document.getElementById('fusion_document_account').value;
+  var jobname  = document.getElementById('fusion_job_name').value;
+
+  // Save first, then test
+  var form = document.getElementById('settings-form');
+  var fd = new FormData(form);
+
+  fetch('/settings/save', { method: 'POST', body: fd })
+    .then(() => fetch('/settings/test-fusion', { method: 'POST' }))
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '&#9654; Test Connection';
+      if (data.ok) {
+        res.innerHTML = '<span style="color:#1e7e34">&#10003; ' + data.message + '</span>';
+      } else {
+        res.innerHTML = '<span style="color:#c0392b">&#10007; ' + data.message + '</span>';
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '&#9654; Test Connection';
+      res.innerHTML = '<span style="color:#c0392b">&#10007; Request failed: ' + err + '</span>';
+    });
+}
+</script>
+{% endblock %}

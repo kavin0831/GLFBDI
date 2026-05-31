@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Dashboard — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}Dashboard{% endblock %}
+
+{% block topbar_actions %}
+  {% if gmail_ok %}
+    <span class="badge badge-success">&#9679; Gmail Connected</span>
+    <button class="btn btn-secondary btn-sm" onclick="pollNow(this)">&#128260; Poll Gmail Now</button>
+  {% else %}
+    <a href="/gmail-setup" class="badge badge-failed" style="text-decoration:none">&#9679; Gmail Not Connected</a>
+  {% endif %}
+  <a href="/upload" class="btn btn-primary btn-sm">&#43; Manual Upload</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- Stats row -->
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">
+  <div class="stat-card">
+    <div class="stat-icon total">&#128202;</div>
+    <div>
+      <div class="stat-value">{{ total }}</div>
+      <div class="stat-label">Total Jobs</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon success">&#9989;</div>
+    <div>
+      <div class="stat-value" style="color:#1e7e34">{{ success }}</div>
+      <div class="stat-label">Succeeded</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon failed">&#10060;</div>
+    <div>
+      <div class="stat-value" style="color:#c0392b">{{ failed }}</div>
+      <div class="stat-label">Failed</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon running">&#9203;</div>
+    <div>
+      <div class="stat-value" id="running-count" style="color:#856404">{{ running }}</div>
+      <div class="stat-label">In Progress</div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent requests -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">&#128203; Recent Requests</h2>
+    {% if running > 0 %}
+      <span style="font-size:12px;color:#9ca3af">
+        <span class="spinner"></span> Auto-refreshing…
+      </span>
+    {% endif %}
+  </div>
+
+  {% if requests %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Source</th>
+          <th>Status</th>
+          <th>Stage</th>
+          <th>Rows</th>
+          <th>Submitted</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests %}
+        <tr>
+          <td>
+            <a href="/request/{{ r.id }}" style="color:#1a73e8;font-weight:500;text-decoration:none">
+              {{ r.file_name or '—' }}
+            </a>
+            {% if r.journal_name %}
+              <div class="small text-muted mt-1">{{ r.journal_name }}</div>
+            {% endif %}
+          </td>
+          <td>
+            <div style="font-size:13px">{{ r.sender_email or '—' }}</div>
+            {% if r.email_subject %}
+              <div class="small text-muted mt-1" title="{{ r.email_subject }}">
+                {{ r.email_subject[:40] }}{% if r.email_subject|length > 40 %}…{% endif %}
+              </div>
+            {% endif %}
+          </td>
+          <td>
+            {% set s = r.status %}
+            {% if s == 'SUCCEEDED' %}
+              <span class="badge badge-success">&#10003; {{ s }}</span>
+            {% elif s == 'FAILED' %}
+              <span class="badge badge-failed">&#10007; {{ s }}</span>
+            {% elif s in ('RECEIVED', 'PROCESSING') %}
+              <span class="badge badge-running">&#9203; {{ s }}</span>
+            {% else %}
+              <span class="badge badge-default">{{ s }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="pill">{{ r.current_stage or '—' }}</span>
+          </td>
+          <td>
+            {% if r.total_rows %}
+              <span title="Total rows">{{ r.total_rows }}</span>
+              {% if r.bad_rows %}
+                <span class="small text-danger"> / {{ r.bad_rows }} bad</span>
+              {% endif %}
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <div style="font-size:12.5px;color:#6b7280">
+              {{ r.created_at.strftime('%d %b %Y') if r.created_at else '—' }}
+            </div>
+            <div style="font-size:11.5px;color:#9ca3af">
+              {{ r.created_at.strftime('%H:%M') if r.created_at else '' }}
+            </div>
+          </td>
+          <td>
+            <div class="d-flex gap-2">
+              <a href="/request/{{ r.id }}" class="btn btn-outline btn-sm">View</a>
+              {% if r.status == 'FAILED' %}
+                <button class="btn btn-primary btn-sm" onclick="retryRequest('{{ r.id }}', this)">&#8635; Retry</button>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">&#128203;</div>
+    <div class="empty-title">No requests yet</div>
+    <div class="empty-hint">Upload a journal file or connect Gmail to get started.</div>
+    <div class="mt-3">
+      <a href="/upload" class="btn btn-primary">&#43; Upload a File</a>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function pollNow(btn) {
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Checking&hellip;';
+  fetch('/api/poll-now', {method:'POST'})
+    .then(r => r.json())
+    .then(() => {
+      btn.innerHTML = '&#10003; Triggered';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; location.reload(); }, 2500);
+    })
+    .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+function retryRequest(id, btn) {
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  fetch('/api/retry/' + id, {method:'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = orig; }
+      else { setTimeout(() => location.reload(), 600); }
+    })
+    .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+</script>
+{% endblock %}

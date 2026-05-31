@@ -1,0 +1,7 @@
+date	company	cost_center	account	segment4	segment5	segment6	batch_name	batch_description	journal_entry_name	journal_entry_description	description	debit	credit	currency
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 1	Journal Entry - 239239	EBS Conversion 1	Journal Entry - 1	250.00		USD
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 1	Journal Entry - 239239	EBS Conversion 1	Journal Entry - 1		250.00	USD
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 1	Journal Entry - 239239	EBS Conversion 2	Journal Entry - 2	350.00		USD
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 1	Journal Entry - 239239	EBS Conversion 2	Journal Entry - 2		350.00	USD
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 2	Journal Entry - 239239	EBS Conversion 1	Journal Entry - 1	450.00		USD
+2025-12-16	120	10	60230	121	000	000	Batch_239239	Testing 2	Journal Entry - 239239	EBS Conversion 1	Journal Entry - 1		450.00	USD

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Oracle GL FBDI{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  /* inline micro-reset */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-logo">O</div>
+    <div class="brand-title">Oracle Fusion GL</div>
+    <div class="brand-sub">FBDI Automation</div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <a href="/" class="nav-link {% if active=='dashboard' %}active{% endif %}">
+      <span class="nav-icon">&#128202;</span>
+      <span>Dashboard</span>
+    </a>
+    <a href="/upload" class="nav-link {% if active=='upload' %}active{% endif %}">
+      <span class="nav-icon">&#128228;</span>
+      <span>Upload File</span>
+    </a>
+    <a href="/settings" class="nav-link {% if active=='settings' %}active{% endif %}">
+      <span class="nav-icon">&#9881;</span>
+      <span>Settings</span>
+    </a>
+    <a href="/gmail-setup" class="nav-link {% if active=='gmail' %}active{% endif %}">
+      <span class="nav-icon">&#128140;</span>
+      <span>Gmail Setup</span>
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    v2.0 &mdash; MongoDB &middot; Local ML
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main-content">
+  <div class="topbar">
+    <div class="topbar-title">{% block topbar_title %}{% endblock %}</div>
+    <div class="d-flex align-items-center gap-2">
+      {% block topbar_actions %}{% endblock %}
+    </div>
+  </div>
+
+  <div class="page-body">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script>
+// Auto-refresh badge for running requests
+(function() {
+  var el = document.getElementById('running-count');
+  if (el && parseInt(el.textContent) > 0) {
+    setTimeout(function() { location.reload(); }, 8000);
+  }
+})();
+
+// Upload drag-drop
+var zone = document.querySelector('.upload-zone');
+if (zone) {
+  zone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    zone.classList.add('drag-over');
+  });
+  zone.addEventListener('dragleave', function() {
+    zone.classList.remove('drag-over');
+  });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    var file = e.dataTransfer.files[0];
+    if (file) {
+      var inp = zone.querySelector('input[type=file]');
+      if (inp) {
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        inp.files = dt.files;
+        zone.querySelector('.upload-text').textContent = file.name;
+      }
+    }
+  });
+}
+
+// File input change label
+var fileInput = document.querySelector('.upload-zone input[type=file]');
+if (fileInput) {
+  fileInput.addEventListener('change', function() {
+    if (this.files[0]) {
+      zone.querySelector('.upload-text').textContent = this.files[0].name;
+    }
+  });
+}
+</script>
+
+{% block extra_js %}{% endblock %}
+</body>
+</html>

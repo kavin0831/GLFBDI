@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% set active = "upload" %}
+
+{% block title %}Upload — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}Manual Upload{% endblock %}
+
+{% block topbar_actions %}
+  <a href="/" class="btn btn-secondary btn-sm">&#8592; Dashboard</a>
+{% endblock %}
+
+{% block content %}
+{% set err = request.query_params.get('err', '') %}
+
+<div style="max-width:720px">
+
+  {% if err %}
+  <div class="alert alert-error" style="margin-bottom:20px">&#10007; {{ err }}</div>
+  {% endif %}
+
+  <form method="POST" action="/upload" enctype="multipart/form-data" id="upload-form">
+
+    <!-- Drop zone -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#128228; Select Journal File(s)</h2>
+        <span style="font-size:12px;color:#9ca3af">ZIP &middot; CSV &middot; TXT</span>
+      </div>
+      <div class="card-body">
+        <label id="drop-zone" for="file-input" style="
+          display:block;border:2px dashed #d1d5db;border-radius:10px;padding:40px 24px;
+          text-align:center;cursor:pointer;transition:all .2s;background:#fafafa">
+          <input type="file" name="files" id="file-input" multiple required
+                 accept=".zip,.csv,.txt" style="display:none">
+          <div style="font-size:40px;margin-bottom:10px">&#128196;</div>
+          <div id="upload-label" style="font-size:15px;font-weight:600;color:#374151;margin-bottom:6px">
+            Click to browse or drag &amp; drop
+          </div>
+          <div style="font-size:12px;color:#9ca3af">
+            Accepted: <strong>.zip</strong> &middot; <strong>.csv</strong> &middot; <strong>.txt</strong> &nbsp;&mdash;&nbsp; max 50 MB each &nbsp;&mdash;&nbsp; multiple files OK
+          </div>
+        </label>
+
+        <!-- File list -->
+        <div id="file-list" style="margin-top:14px;display:none">
+          <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+            Selected Files
+          </div>
+          <div id="file-items" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Parameters -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#9881; Journal Parameters</h2>
+        <span style="font-size:12px;font-weight:400;color:#9ca3af">all optional — auto-detected if blank</span>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label" for="ledger_name">Ledger Name</label>
+            <input type="text" class="form-control" id="ledger_name" name="ledger_name"
+                   placeholder="e.g. US Primary Ledger">
+            <div class="form-hint">Defaults to Settings value</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label" for="accounting_date">Accounting Date</label>
+            <input type="date" class="form-control" id="accounting_date" name="accounting_date">
+            <div class="form-hint">Auto-detected from file if blank</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label" for="journal_name">Journal Name</label>
+            <input type="text" class="form-control" id="journal_name" name="journal_name"
+                   placeholder="e.g. May-26 GL Import">
+            <div class="form-hint">Defaults to file name</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label" for="currency">Currency</label>
+            <select class="form-control" id="currency" name="currency">
+              <option value="USD" selected>USD — US Dollar</option>
+              <option value="EUR">EUR — Euro</option>
+              <option value="GBP">GBP — British Pound</option>
+              <option value="INR">INR — Indian Rupee</option>
+              <option value="AED">AED — UAE Dirham</option>
+              <option value="SGD">SGD — Singapore Dollar</option>
+              <option value="AUD">AUD — Australian Dollar</option>
+              <option value="CAD">CAD — Canadian Dollar</option>
+              <option value="JPY">JPY — Japanese Yen</option>
+            </select>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label" for="period_name">Period Name</label>
+            <input type="text" class="form-control" id="period_name" name="period_name"
+                   placeholder="e.g. May-26">
+            <div class="form-hint">Oracle format: Mon-YY</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div style="display:flex;gap:12px;align-items:center">
+      <button type="submit" class="btn btn-primary" id="submit-btn" style="padding:11px 28px;font-size:14px">
+        &#128228; Process &amp; Submit to Oracle
+      </button>
+      <a href="/" class="btn btn-secondary" style="padding:11px 20px">Cancel</a>
+      <span id="upload-status" style="font-size:13px;color:#6b7280;display:none;align-items:center;gap:8px">
+        <span class="spinner"></span> Uploading &amp; processing&hellip;
+      </span>
+    </div>
+
+  </form>
+
+  <!-- How it works -->
+  <div class="card" style="margin-top:24px">
+    <div class="card-header">
+      <h2 class="card-title">&#8505; What happens after upload?</h2>
+    </div>
+    <div class="card-body" style="padding:16px 22px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 28px">
+        {% for n, title, hint in [
+          ('1','Parse','File read &amp; converted to records'),
+          ('2','AI Column Mapping','Local ML maps columns to Oracle FBDI'),
+          ('3','Validate','Debit/credit balance &amp; row checks'),
+          ('4','ZIP Validation','If ZIP — CSV inside is also validated'),
+          ('5','Generate FBDI','GlInterface.csv + .zip created'),
+          ('6','Submit &amp; Monitor','Posted to Oracle; ESS job tracked'),
+        ] %}
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:5px 0">
+          <span style="background:#e8f0fe;color:#1a73e8;border-radius:50%;width:22px;height:22px;
+            display:inline-flex;align-items:center;justify-content:center;font-size:11px;
+            font-weight:700;flex-shrink:0;margin-top:1px">{{ n }}</span>
+          <div>
+            <strong style="font-size:13px">{{ title }}</strong>
+            <div class="form-hint">{{ hint }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var zone  = document.getElementById('drop-zone');
+var input = document.getElementById('file-input');
+var label = document.getElementById('upload-label');
+var list  = document.getElementById('file-list');
+var items = document.getElementById('file-items');
+
+var ALLOWED = ['.zip', '.csv', '.txt'];
+
+function extOf(name) { return name.slice(name.lastIndexOf('.')).toLowerCase(); }
+function fmtSize(b) {
+  return b > 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
+}
+
+function renderFiles(files) {
+  items.innerHTML = '';
+  var ok = 0;
+  Array.from(files).forEach(function(f) {
+    var ext  = extOf(f.name);
+    var good = ALLOWED.indexOf(ext) !== -1;
+    if (good) ok++;
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 12px;' +
+      'border-radius:7px;border:1px solid ' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
+      'background:' + (good ? '#f0faf2' : '#fff5f5');
+    row.innerHTML =
+      '<span style="font-size:16px">' + (good ? '&#128196;' : '&#9888;') + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + f.name + '</div>' +
+        '<div style="font-size:11px;color:#9ca3af">' + fmtSize(f.size) +
+          (good ? '' : ' &nbsp;&#8212;&nbsp; <span style="color:#dc2626">not allowed (use .zip .csv .txt)</span>') +
+        '</div>' +
+      '</div>' +
+      '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;' +
+        'background:' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
+        'color:' + (good ? '#155724' : '#721c24') + '">' + ext.toUpperCase() + '</span>';
+    items.appendChild(row);
+  });
+
+  list.style.display = 'block';
+  label.textContent = ok + ' file' + (ok !== 1 ? 's' : '') + ' selected';
+  zone.style.borderColor = ok > 0 ? 'var(--oracle-red)' : '#f5c6cb';
+  zone.style.background  = ok > 0 ? '#fff8f7' : '#fff5f5';
+}
+
+zone.addEventListener('dragover', function(e) {
+  e.preventDefault(); zone.style.borderColor = '#1a73e8'; zone.style.background = '#f0f7ff';
+});
+zone.addEventListener('dragleave', function() {
+  zone.style.borderColor = '#d1d5db'; zone.style.background = '#fafafa';
+});
+zone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  zone.style.borderColor = '#d1d5db'; zone.style.background = '#fafafa';
+  var dt = new DataTransfer();
+  Array.from(e.dataTransfer.files).forEach(function(f) { dt.items.add(f); });
+  input.files = dt.files;
+  renderFiles(dt.files);
+});
+
+input.addEventListener('change', function() {
+  if (this.files.length) renderFiles(this.files);
+});
+
+document.getElementById('upload-form').addEventListener('submit', function(e) {
+  // Block if no valid files
+  var hasValid = false;
+  Array.from(input.files).forEach(function(f) {
+    if (ALLOWED.indexOf(extOf(f.name)) !== -1) hasValid = true;
+  });
+  if (!hasValid) { e.preventDefault(); return; }
+
+  var btn = document.getElementById('submit-btn');
+  var status = document.getElementById('upload-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Uploading…';
+  status.style.display = 'inline-flex';
+});
+</script>
+{% endblock %}

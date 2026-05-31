@@ -1,0 +1,3 @@
+date,Segment1,Segment2,Segment3,Segment4,Segment5,Segment6,REFERENCE1 (Batch Name),REFERENCE2 (Batch Description),REFERENCE4 (Journal Entry Name),REFERENCE5 (Journal Entry Description),REFERENCE10 (Journal Entry Line Description),Entered Debit Amount,Entered Credit Amount
+2025-12-16,120,10,60230,121,000,000,Batch_239239,Testing 1,Journal Entry - 239239,EBS Conversion 1,Oracle-format debit,400.00,
+2025-12-16,120,10,60230,121,000,000,Batch_239239,Testing 1,Journal Entry - 239239,EBS Conversion 1,Oracle-format credit,,400.00
