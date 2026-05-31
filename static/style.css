@@ -59,6 +59,19 @@ body {
     color: #fff;
 }
 
+/* OneGlobe corporate logo above the brand title */
+.sidebar-logo-img {
+    display: block;
+    max-width: 160px;
+    width: 100%;
+    height: auto;
+    margin: 0 auto 12px;
+    background: #fff;
+    border-radius: 6px;
+    padding: 6px 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+
 .sidebar-nav {
     flex: 1;
     padding: 12px 0;
