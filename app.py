@@ -426,6 +426,75 @@ async def upload_gmail_token(file: UploadFile = File(...)):
                              status_code=303)
 
 
+def _gmail_oauth_redirect_uri() -> str:
+    """The Google-side redirect URL — must be registered in your OAuth client."""
+    from workflow import _public_base_url
+    return f"{_public_base_url()}/gmail-setup/oauth-callback"
+
+
+@app.get("/gmail-setup/oauth-start")
+async def gmail_oauth_start():
+    """
+    Start a server-side OAuth flow. The user's browser is redirected to Google's
+    consent page; Google then redirects back to /gmail-setup/oauth-callback with
+    a `code` query param. Works on any headless host (HF Spaces, Docker) because
+    the consent UI runs in the USER's browser, not on the server.
+    """
+    from google_auth_oauthlib.flow import Flow
+    cfg = get_settings()
+    creds_path = Path(cfg.gmail_credentials_file)
+    if not creds_path.exists():
+        return RedirectResponse("/gmail-setup?err=Upload+credentials.json+first",
+                                 status_code=303)
+    try:
+        flow = Flow.from_client_secrets_file(
+            str(creds_path),
+            scopes=["https://www.googleapis.com/auth/gmail.modify"],
+            redirect_uri=_gmail_oauth_redirect_uri(),
+        )
+        auth_url, _state = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+        )
+    except Exception as e:
+        return RedirectResponse(f"/gmail-setup?err=Could+not+build+auth+URL%3A+{str(e)[:80]}",
+                                 status_code=303)
+    return RedirectResponse(auth_url, status_code=303)
+
+
+@app.get("/gmail-setup/oauth-callback")
+async def gmail_oauth_callback(code: str = "", error: str = ""):
+    """Google sends the user's browser back here with ?code=... — we exchange it."""
+    if error:
+        return RedirectResponse(f"/gmail-setup?err=Google+returned+{error[:80]}",
+                                 status_code=303)
+    if not code:
+        return RedirectResponse("/gmail-setup?err=No+code+returned+from+Google",
+                                 status_code=303)
+    from google_auth_oauthlib.flow import Flow
+    cfg = get_settings()
+    try:
+        flow = Flow.from_client_secrets_file(
+            str(cfg.gmail_credentials_file),
+            scopes=["https://www.googleapis.com/auth/gmail.modify"],
+            redirect_uri=_gmail_oauth_redirect_uri(),
+        )
+        flow.fetch_token(code=code)
+        token_json = flow.credentials.to_json()
+        # Write to disk + MongoDB
+        Path(cfg.gmail_token_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(cfg.gmail_token_file).write_text(token_json)
+        store_secure_file("gmail_token", token_json.encode())
+        logger.info("Gmail OAuth callback completed — token stored")
+    except Exception as e:
+        return RedirectResponse(f"/gmail-setup?err=Token+exchange+failed%3A+{str(e)[:120]}",
+                                 status_code=303)
+    return RedirectResponse(
+        "/gmail-setup?msg=Gmail+authorized+successfully+%E2%80%94+polling+active",
+        status_code=303)
+
+
 @app.post("/gmail-setup/authorize")
 async def authorize_gmail():
     """Trigger OAuth2 flow — opens browser on server machine."""

@@ -123,32 +123,54 @@
       {% if not creds_exists %}
         <div class="alert alert-warning" style="margin-bottom:0">Upload credentials.json first (Step 2).</div>
       {% elif headless %}
-        <!-- Headless container (HF Spaces / Docker): can't open a browser; user must upload the token -->
-        <div class="alert alert-warning" style="margin-bottom:16px;font-size:13px">
-          This server is headless &mdash; it has no browser, so the in-app OAuth flow can't run here.
-          Generate the OAuth token locally, then upload it below.
+        <!-- Headless container (HF Spaces / Docker): use server-side OAuth flow -->
+        <p style="font-size:13.5px;color:#374151;margin-bottom:16px;line-height:1.6">
+          Click the button below to sign in with Google. <strong>Your own browser</strong>
+          handles the consent — the server doesn't need a display.
+        </p>
+
+        <!-- Primary path: Google OAuth via redirect -->
+        <a href="/gmail-setup/oauth-start" class="btn btn-success" style="font-size:14px">
+          &#9654; Sign in with Google
+        </a>
+
+        <div class="alert alert-warning mt-3" style="font-size:13px;margin-bottom:0">
+          <strong>One-time setup in Google Cloud Console</strong> &mdash; before clicking the button,
+          make sure your OAuth client (downloaded as <code>credentials.json</code>) meets
+          these requirements:
+          <ul style="margin:8px 0 0 0;padding-left:22px;line-height:1.7">
+            <li><strong>Client type</strong> must be <em>Web application</em> (not Desktop) so it accepts an HTTPS redirect</li>
+            <li>Under <em>Authorized redirect URIs</em>, add exactly this URL:</li>
+          </ul>
+          <code style="display:block;background:#fff;padding:6px 10px;border-radius:4px;border:1px solid #d1d5db;margin-top:8px;font-size:12px;word-break:break-all">{{ request.url_for('gmail_oauth_callback') }}</code>
         </div>
-        <ol style="line-height:2;font-size:13.5px;color:#374151;padding-left:22px;margin:0 0 16px">
-          <li>On your own laptop, clone &amp; run the app: <code>python app.py</code></li>
-          <li>Open <code>http://localhost:8000/gmail-setup</code> &rarr; finish steps 1&ndash;3 there (a browser will open and ask Google for consent)</li>
-          <li>A file <code>config/gmail_token.json</code> appears on your laptop</li>
-          <li>Upload that <code>gmail_token.json</code> here:</li>
-        </ol>
-        <form method="POST" action="/gmail-setup/upload-token" enctype="multipart/form-data">
-          <div style="display:flex;gap:12px;align-items:stretch">
-            <input type="file" name="file" accept=".json" required
-                   style="flex:1;border:1.5px solid #d1d5db;border-radius:8px;padding:9px 13px;font-size:13.5px;color:#374151;background:#fff;min-width:0">
-            <button type="submit" class="btn btn-success" style="flex-shrink:0;white-space:nowrap">
-              &#128228; Upload OAuth Token
-            </button>
-          </div>
-          <div class="form-hint mt-2">Stored encrypted in MongoDB &mdash; survives Space rebuilds.</div>
-        </form>
+
         {% if token_exists %}
           <div class="alert alert-info mt-3" style="margin-bottom:0;font-size:13px">
-            Token already uploaded. Upload again to replace it if it's expired.
+            &#10003; Token already stored. Click the button to re-authorize (e.g. after revoking access).
           </div>
         {% endif %}
+
+        <!-- Fallback: manual token upload (kept for when redirect URI can't be added) -->
+        <details style="margin-top:18px">
+          <summary style="cursor:pointer;font-size:13px;color:#6b7280">
+            Alternative: upload a token generated on your laptop
+          </summary>
+          <form method="POST" action="/gmail-setup/upload-token" enctype="multipart/form-data" style="margin-top:12px">
+            <ol style="line-height:1.8;font-size:13px;color:#374151;padding-left:22px;margin:0 0 12px">
+              <li>Run <code>python app.py</code> on your laptop, finish Authorize Gmail there</li>
+              <li><code>config/gmail_token.json</code> appears &mdash; upload it here:</li>
+            </ol>
+            <div style="display:flex;gap:10px;align-items:stretch">
+              <input type="file" name="file" accept=".json" required
+                     style="flex:1;border:1.5px solid #d1d5db;border-radius:8px;padding:8px 12px;font-size:13px;color:#374151;background:#fff;min-width:0">
+              <button type="submit" class="btn btn-outline" style="flex-shrink:0;white-space:nowrap">
+                Upload Token File
+              </button>
+            </div>
+          </form>
+        </details>
+
       {% else %}
         <p style="font-size:13.5px;color:#374151;margin-bottom:16px;line-height:1.6">
           Click below to open a browser window on this machine for Google OAuth2 consent.
