@@ -109,6 +109,17 @@
           </div>
 
           <div class="form-group">
+            <label class="form-label" for="app_base_url">Public App URL</label>
+            <input type="url" class="form-control" id="app_base_url" name="app_base_url"
+                   value="{{ cfg.app_base_url or '' }}"
+                   placeholder="https://kavin08028292002-glgbdi.hf.space">
+            <div class="form-hint">
+              Used in approval-email links (Continue / Reject buttons).
+              Auto-detected from <code>SPACE_HOST</code> on Hugging Face if blank.
+            </div>
+          </div>
+
+          <div class="form-group">
             <label class="form-label" for="gmail_poll_seconds">Gmail Poll Interval (seconds)</label>
             <input type="number" class="form-control" id="gmail_poll_seconds" name="gmail_poll_seconds"
                    value="{{ cfg.gmail_poll_seconds }}" min="10" max="3600">

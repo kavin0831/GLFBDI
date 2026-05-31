@@ -363,6 +363,9 @@ _DEFAULT_SETTINGS = {
     "mapping_threshold":       0.70,
     "ess_poll_seconds":        5,
     "ess_max_minutes":         30,
+    # Public host used in approval emails. Leave blank to auto-detect from
+    # the SPACE_HOST env var (HF Spaces) or APP_BASE_URL env var.
+    "app_base_url":            "",
 }
 
 

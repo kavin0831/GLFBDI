@@ -309,12 +309,35 @@ GlInterface.zip submitted to Oracle Fusion automatically — all {good_rows} row
     send_email(cfg.notification_email, f"🚀 FBDI Started — {req.journal_name or req.file_name} | {period}", html)
 
 
+def _public_base_url() -> str:
+    """
+    Public-facing base URL used in approval emails so the Continue/Reject buttons
+    are reachable by the recipient (not their localhost).
+    Priority: APP_BASE_URL env var > SPACE_HOST (HF auto-set) > settings.app_base_url > localhost fallback.
+    """
+    import os as _os
+    base = _os.environ.get("APP_BASE_URL", "").strip()
+    if base:
+        return base.rstrip("/")
+    # Hugging Face Spaces sets SPACE_HOST to e.g. "kavin08028292002-glgbdi.hf.space"
+    space_host = _os.environ.get("SPACE_HOST", "").strip()
+    if space_host:
+        return f"https://{space_host}"
+    try:
+        cfg_url = (get_settings().app_base_url or "").strip()
+        if cfg_url:
+            return cfg_url.rstrip("/")
+    except Exception:
+        pass
+    return "http://localhost:8000"
+
+
 def _send_approval_email(req_id: str, token: str, good_rows: int, bad_rows: int):
     with SessionLocal() as db:
         req = db.get(JournalRequest, req_id)
         if not req: return
     cfg = get_settings()
-    base = f"http://localhost:8000"
+    base = _public_base_url()
     cont_url = f"{base}/approve/{token}?action=continue"
     rej_url  = f"{base}/approve/{token}?action=reject"
     html = f"""

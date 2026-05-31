@@ -337,6 +337,7 @@ async def save_settings(
     gmail_poll_seconds:    int = Form(60),
     mapping_threshold:     float = Form(0.70),
     ess_max_minutes:       int = Form(30),
+    app_base_url:          str = Form(""),
 ):
     with SessionLocal() as db:
         cfg = db.get(AppSettings, 1)
@@ -351,6 +352,7 @@ async def save_settings(
         cfg.gmail_poll_seconds     = gmail_poll_seconds
         cfg.mapping_threshold      = mapping_threshold
         cfg.ess_max_minutes        = ess_max_minutes
+        cfg.app_base_url           = app_base_url
         cfg.updated_at             = datetime.now(timezone.utc)
         db.commit()
     return RedirectResponse("/settings?msg=Settings+saved+successfully", status_code=303)
