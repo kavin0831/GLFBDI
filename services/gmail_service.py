@@ -44,17 +44,44 @@ def get_gmail_service():
                 "Please complete Gmail Setup in the Settings page."
             )
 
+    # Token: try disk first, fall back to MongoDB (HF Spaces rebuilds wipe the disk)
+    if not token_path.exists():
+        stored_token = get_secure_file("gmail_token")
+        if stored_token:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_bytes(stored_token)
+            logger.info("Restored gmail_token from MongoDB")
+
     if token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), _scopes())
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json())
+            # Also persist refreshed token to MongoDB so next container restart sees it
+            try:
+                from database import store_secure_file as _store
+                _store("gmail_token", token_path.read_bytes())
+            except Exception:
+                pass
         else:
+            # No valid token and refresh impossible — fall back to interactive flow.
+            # This needs a browser on the server, which doesn't exist in headless
+            # containers (HF Spaces, Docker). Tell the user clearly what to do.
+            import os as _os
+            if _os.environ.get("SPACE_ID") or (_os.name == "posix" and not _os.environ.get("DISPLAY")):
+                raise RuntimeError(
+                    "Cannot launch OAuth browser on this headless server. "
+                    "Run the app locally once, finish 'Authorize Gmail' there, "
+                    "then upload the generated config/gmail_token.json file "
+                    "via /gmail-setup → 'Upload OAuth Token'."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), _scopes())
             creds = flow.run_local_server(port=0)
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json())
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
 

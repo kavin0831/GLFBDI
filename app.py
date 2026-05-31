@@ -364,6 +364,15 @@ async def test_fusion():
 
 
 # ── Gmail setup ───────────────────────────────────────────────────────────────
+def _is_headless() -> bool:
+    """True when running in a container with no display (HF Spaces, Docker, etc.)."""
+    import os
+    # No DISPLAY env var on Linux, or explicit HF_SPACE_ID set by Hugging Face
+    return (os.environ.get("SPACE_ID") is not None
+            or os.environ.get("HF_SPACE") is not None
+            or (os.name == "posix" and not os.environ.get("DISPLAY")))
+
+
 @app.get("/gmail-setup", response_class=HTMLResponse)
 async def gmail_setup_page(request: Request):
     cfg = get_settings()
@@ -372,6 +381,7 @@ async def gmail_setup_page(request: Request):
     return templates.TemplateResponse("gmail_setup.html", {
         "request": request, "creds_exists": creds_exists, "token_exists": token_exists,
         "creds_path": cfg.gmail_credentials_file,
+        "headless": _is_headless(),
     })
 
 
@@ -384,6 +394,34 @@ async def upload_gmail_creds(file: UploadFile = File(...)):
     dest.write_bytes(content)
     store_secure_file("gmail_credentials", content)
     return RedirectResponse("/gmail-setup?msg=Credentials+uploaded", status_code=303)
+
+
+@app.post("/gmail-setup/upload-token")
+async def upload_gmail_token(file: UploadFile = File(...)):
+    """
+    Upload a pre-generated OAuth token (gmail_token.json) — the path used when
+    running on a headless server (Hugging Face Space, Docker container) that
+    can't open a browser for the local-server OAuth flow.
+
+    To produce the token: run the app locally, complete the Authorize Gmail
+    flow once (browser opens, you grant access), copy `config/gmail_token.json`,
+    upload it here.
+    """
+    cfg = get_settings()
+    dest = Path(cfg.gmail_token_file)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    # Validate it parses as JSON before storing — bad tokens silently break polling
+    try:
+        import json as _json
+        _json.loads(content.decode("utf-8"))
+    except Exception as e:
+        return RedirectResponse(f"/gmail-setup?err=Invalid+token+JSON%3A+{str(e)[:60]}",
+                                 status_code=303)
+    dest.write_bytes(content)
+    store_secure_file("gmail_token", content)
+    return RedirectResponse("/gmail-setup?msg=OAuth+token+uploaded+%E2%80%94+Gmail+polling+active",
+                             status_code=303)
 
 
 @app.post("/gmail-setup/authorize")

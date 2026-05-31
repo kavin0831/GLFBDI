@@ -122,6 +122,33 @@
     <div class="card-body">
       {% if not creds_exists %}
         <div class="alert alert-warning" style="margin-bottom:0">Upload credentials.json first (Step 2).</div>
+      {% elif headless %}
+        <!-- Headless container (HF Spaces / Docker): can't open a browser; user must upload the token -->
+        <div class="alert alert-warning" style="margin-bottom:16px;font-size:13px">
+          This server is headless &mdash; it has no browser, so the in-app OAuth flow can't run here.
+          Generate the OAuth token locally, then upload it below.
+        </div>
+        <ol style="line-height:2;font-size:13.5px;color:#374151;padding-left:22px;margin:0 0 16px">
+          <li>On your own laptop, clone &amp; run the app: <code>python app.py</code></li>
+          <li>Open <code>http://localhost:8000/gmail-setup</code> &rarr; finish steps 1&ndash;3 there (a browser will open and ask Google for consent)</li>
+          <li>A file <code>config/gmail_token.json</code> appears on your laptop</li>
+          <li>Upload that <code>gmail_token.json</code> here:</li>
+        </ol>
+        <form method="POST" action="/gmail-setup/upload-token" enctype="multipart/form-data">
+          <div style="display:flex;gap:12px;align-items:stretch">
+            <input type="file" name="file" accept=".json" required
+                   style="flex:1;border:1.5px solid #d1d5db;border-radius:8px;padding:9px 13px;font-size:13.5px;color:#374151;background:#fff;min-width:0">
+            <button type="submit" class="btn btn-success" style="flex-shrink:0;white-space:nowrap">
+              &#128228; Upload OAuth Token
+            </button>
+          </div>
+          <div class="form-hint mt-2">Stored encrypted in MongoDB &mdash; survives Space rebuilds.</div>
+        </form>
+        {% if token_exists %}
+          <div class="alert alert-info mt-3" style="margin-bottom:0;font-size:13px">
+            Token already uploaded. Upload again to replace it if it's expired.
+          </div>
+        {% endif %}
       {% else %}
         <p style="font-size:13.5px;color:#374151;margin-bottom:16px;line-height:1.6">
           Click below to open a browser window on this machine for Google OAuth2 consent.
