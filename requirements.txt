@@ -9,6 +9,10 @@ aiofiles==24.1.0
 pymongo[srv]>=4.6.0
 
 # Local ML — no API key, runs 100% offline after first model download (~22 MB)
+# Force the CPU-only PyTorch build so we don't drag in ~3 GB of NVIDIA CUDA libs
+# (we have no GPU, so the default GPU wheels are pure dead weight).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 sentence-transformers==3.3.1
 scikit-learn==1.5.2
 numpy==2.2.0
