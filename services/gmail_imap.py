@@ -58,7 +58,8 @@ def test_app_password() -> tuple[bool, str]:
     user, pwd = c
     try:
         with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT,
-                               ssl_context=ssl.create_default_context()) as imap:
+                               ssl_context=ssl.create_default_context(),
+                               timeout=15) as imap:
             imap.login(user, pwd)
             imap.select("INBOX")
             imap.logout()
@@ -92,7 +93,8 @@ def fetch_unprocessed_messages() -> list[dict]:
     out = []
     try:
         with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT,
-                               ssl_context=ssl.create_default_context()) as imap:
+                               ssl_context=ssl.create_default_context(),
+                               timeout=15) as imap:
             imap.login(user, pwd)
             imap.select("INBOX")
 
@@ -160,7 +162,8 @@ def mark_processed(imap_uid: str):
     user, pwd = c
     try:
         with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT,
-                               ssl_context=ssl.create_default_context()) as imap:
+                               ssl_context=ssl.create_default_context(),
+                               timeout=15) as imap:
             imap.login(user, pwd)
             imap.select("INBOX")
             # Add Gmail label via STORE on the X-GM-LABELS attribute

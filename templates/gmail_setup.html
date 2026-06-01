@@ -117,8 +117,12 @@
   </div>
 </div>
 
-<!-- Steps -->
-<div style="display:flex;flex-direction:column;gap:16px">
+<!-- Steps — collapsed by default since most users now use the App Password card above -->
+<details style="margin-top:8px">
+<summary style="cursor:pointer;font-size:14px;color:#374151;padding:10px 14px;background:#fff;border:1px solid #e8ecf0;border-radius:8px;font-weight:600;list-style:none">
+  &#9881; Advanced: OAuth 2.0 setup (only if you don't want App Password) &nbsp;<span style="float:right;color:#9ca3af;font-weight:400;font-size:12px">click to expand</span>
+</summary>
+<div style="display:flex;flex-direction:column;gap:16px;margin-top:12px">
 
   <!-- Step 1 -->
   <div class="card">
@@ -277,6 +281,7 @@
   {% endif %}
 
 </div>
+</details>
 </div>
 {% endblock %}
 
@@ -287,10 +292,19 @@ function testGmailPassword(btn) {
   var orig = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Testing…';
-  if (msg) msg.textContent = '';
-  fetch('/settings/test-gmail', {method: 'POST'})
-    .then(r => r.json())
-    .then(data => {
+  if (msg) { msg.textContent = ''; msg.style.color = '#6b7280'; }
+
+  // Abort the fetch after 25s so the button can't spin forever
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 25000);
+
+  fetch('/settings/test-gmail', {method: 'POST', signal: ctrl.signal})
+    .then(function(r) {
+      clearTimeout(timer);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
       if (msg) {
         msg.style.color = data.ok ? '#1e7e34' : '#c0392b';
         msg.textContent = (data.ok ? '✓ ' : '✗ ') + data.message;
@@ -298,8 +312,12 @@ function testGmailPassword(btn) {
       btn.disabled = false;
       btn.innerHTML = orig;
     })
-    .catch(e => {
-      if (msg) { msg.style.color = '#c0392b'; msg.textContent = '✗ ' + e; }
+    .catch(function(e) {
+      clearTimeout(timer);
+      var label = (e.name === 'AbortError')
+        ? '✗ Timed out after 25s — IMAP login is hanging. Check that 2FA is on and the App Password is correct.'
+        : '✗ ' + (e.message || e);
+      if (msg) { msg.style.color = '#c0392b'; msg.textContent = label; }
       btn.disabled = false;
       btn.innerHTML = orig;
     });
