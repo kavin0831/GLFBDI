@@ -88,9 +88,42 @@ ALIASES: dict[str, list[str]] = {
     "*Journal Category":                    ["category","journal category","je category","je_category"],
     "*Journal Source":                      ["source","journal source","je source","je_source"],
     "Period Name":                           ["period","period name","accounting period","gl period","period_name"],
-    "Currency Conversion Rate":              ["rate","conversion rate","exchange rate","fx rate","forex rate","currency rate","conv rate","conv_rate","exchange_rate","rate_value"],
-    "Currency Conversion Type":              ["conversion type","exchange type","rate type","conv type","rate_type"],
-    "Currency Conversion Date":              ["conversion date","exchange date","rate date","conv date","rate_date"],
+    "Currency Conversion Rate":              ["rate","conversion rate","exchange rate","fx rate","forex rate","currency rate","conv rate","conv_rate","exchange_rate","rate_value","currency conversion rate"],
+    "Currency Conversion Type":              ["conversion type","exchange type","rate type","conv type","rate_type","user currency conversion type","user_currency_conversion_type"],
+    "Currency Conversion Date":              ["conversion date","exchange date","rate date","conv date","rate_date","currency conversion date"],
+}
+
+# Oracle's internal GL_INTERFACE table column names — exact aliases.
+# These are unambiguous (one-to-one) and override any embedding guess.
+_DB_COLUMN_ALIASES: dict[str, str] = {
+    "status":                       "*Status Code",
+    "status_code":                  "*Status Code",
+    "ledger_id":                    "*Ledger ID",
+    "accounting_date":              "*Effective Date of Transaction",
+    "user_je_source_name":          "*Journal Source",
+    "user_je_category_name":        "*Journal Category",
+    "currency_code":                "*Currency Code",
+    "date_created":                 "*Journal Entry Creation Date",
+    "actual_flag":                  "*Actual Flag",
+    "entered_dr":                   "Entered Debit Amount",
+    "entered_cr":                   "Entered Credit Amount",
+    "accounted_dr":                 "Converted Debit Amount",
+    "accounted_cr":                 "Converted Credit Amount",
+    "batch_name":                   "REFERENCE1 (Batch Name)",
+    "batch_description":            "REFERENCE2 (Batch Description)",
+    "journal_entry_name":           "REFERENCE4 (Journal Entry Name)",
+    "journal_entry_description":    "REFERENCE5 (Journal Entry Description)",
+    "journal_entry_reference":      "REFERENCE6 (Journal Entry Reference)",
+    "journal_entry_line_description": "REFERENCE10 (Journal Entry Line Description)",
+    "stat_amount":                  "Statistical Amount",
+    "group_id":                     "Interface Group Identifier",
+    "ledger_name":                  "Ledger Name",
+    "period_name":                  "Period Name",
+    "average_journal_flag":         "Average Journal Flag",
+    "encumbrance_type_id":          "Encumbrance Type ID",
+    "user_currency_conversion_type":"Currency Conversion Type",
+    "currency_conversion_date":     "Currency Conversion Date",
+    "currency_conversion_rate":     "Currency Conversion Rate",
 }
 
 _model = None
@@ -143,6 +176,12 @@ def map_column(source_col: str, history_boost: dict[str, tuple[str, float]] | No
         canonical = _ORACLE_FIELD_NOSTAR[nostar]
         return {"source_field": source_col, "target_field": canonical,
                 "confidence": 0.99, "reason": "Matched Oracle field name (without prefix).", "method": "exact"}
+    # 0b. Oracle GL_INTERFACE DB column name (e.g. ENTERED_DR, ACTUAL_FLAG)
+    db_key = source_col.strip().lower()
+    if db_key in _DB_COLUMN_ALIASES:
+        return {"source_field": source_col, "target_field": _DB_COLUMN_ALIASES[db_key],
+                "confidence": 0.99, "reason": "Matched Oracle GL_INTERFACE table column name.",
+                "method": "exact"}
 
     # 1. History boost — known good mappings from previous imports
     if history_boost and source_col.lower() in history_boost:

@@ -186,14 +186,25 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
         # else: rate will be filled by the source→target mapping below if provided
         gl["Interface Group Identifier"]      = group_id
 
-        # Map source → target
+        # Map source → target. When two source columns map to the same target
+        # (ambiguous ML), keep the FIRST non-empty value rather than overwriting
+        # — prevents e.g. EXPENDITURE_TYPE="000" clobbering ACTUAL_FLAG="A".
         for src, tgt in src_to_tgt.items():
             val = row.get(src,"")
-            if val and str(val).lower() not in ("nan","none","null",""):
-                v = str(val).strip()
-                if tgt in DATE_FIELDS:
-                    v = _fmt_date(v)
-                gl[tgt] = v
+            if not val or str(val).lower() in ("nan","none","null",""):
+                continue
+            v = str(val).strip()
+            if tgt in DATE_FIELDS:
+                v = _fmt_date(v)
+            existing = gl.get(tgt, "")
+            # Allow overwriting our own constant defaults (NEW, A, Manual, etc.)
+            # but not values that came from earlier source columns mapped here.
+            if existing and existing not in ("NEW", "A", "Manual",
+                                              "Corporate", "1.00", "USD",
+                                              acct_date, now, ledger,
+                                              period, jnl_name, group_id):
+                continue
+            gl[tgt] = v
 
         dr = gl.get("Entered Debit Amount","").strip()
         cr = gl.get("Entered Credit Amount","").strip()

@@ -17,6 +17,18 @@ _FBDI_HEADER_SIGNALS = {
     "segment1", "entered debit amount", "entered credit amount",
 }
 
+# Oracle's internal GL_INTERFACE table column names — appear as headers in
+# the official FBDI templates downloaded from Oracle. These map POSITIONALLY
+# to the 150-column FBDI layout (column N in this file == COLUMNS[N] in our
+# generator), so we don't need ML mapping when we detect this format.
+_FBDI_DB_HEADER_SIGNALS = {
+    "status", "ledger_id", "accounting_date", "user_je_source_name",
+    "user_je_category_name", "currency_code", "date_created", "actual_flag",
+    "entered_dr", "entered_cr", "accounted_dr", "accounted_cr",
+    "group_id", "period_name", "ledger_name", "batch_name",
+    "journal_entry_name", "journal_entry_line_description",
+}
+
 
 def _encoding(path: str) -> str:
     with open(path,"rb") as f: raw=f.read(50000)
@@ -55,6 +67,13 @@ def detect_file_format(file_path: str) -> str:
         with_header = pd.read_csv(file_path, sep=sep, encoding=enc, nrows=0,
                                   dtype=str, on_bad_lines="skip", engine="python")
         header_lower = {c.strip().lower() for c in with_header.columns}
+
+        # Oracle DB-style headers (STATUS, LEDGER_ID, ENTERED_DR, …) — positional file
+        db_overlap = header_lower & _FBDI_DB_HEADER_SIGNALS
+        if len(db_overlap) >= 5:
+            return "fbdi_db_headers"
+
+        # Friendly FBDI headers (*Status Code, Segment1, …)
         overlap = header_lower & _FBDI_HEADER_SIGNALS
         if len(overlap) >= 3:
             return "fbdi_headers"
@@ -80,28 +99,32 @@ def parse_to_records(file_path: str) -> tuple[list[dict], list[str]]:
 
 def _smart_csv(path: str) -> pd.DataFrame:
     """
-    CSV/TXT reader that handles three scenarios:
-    1. Headerless Oracle FBDI format (first value = NEW, last = END)
-    2. CSV with Oracle FBDI column headers
-    3. Regular data CSV
+    CSV/TXT reader that handles four scenarios:
+    1. Headerless Oracle FBDI format (first value = NEW, last = END) → positional
+    2. CSV with Oracle DB-style headers (STATUS, LEDGER_ID, ENTERED_DR, ACTUAL_FLAG…)
+       → positional, header row stripped (these come from official Oracle FBDI templates)
+    3. CSV with friendly Oracle FBDI headers (*Status Code, Segment1, …) → use headers
+    4. Regular business-named data CSV → standard parsing + ML mapping
     """
     fmt = detect_file_format(path)
 
-    if fmt == "fbdi_headerless":
+    if fmt in ("fbdi_headerless", "fbdi_db_headers"):
         from utils.fbdi_generator import COLUMNS
-        enc = _encoding(path)
+        skip = 1 if fmt == "fbdi_db_headers" else 0
+        enc  = _encoding(path)
         for sep in (",", "\t", ";", "|"):
             try:
                 df = pd.read_csv(path, sep=sep, encoding=enc, dtype=str,
-                                 header=None, on_bad_lines="skip", engine="python")
+                                 header=None, skiprows=skip,
+                                 on_bad_lines="skip", engine="python")
                 if df.shape[1] >= 10:
                     n = min(df.shape[1], len(COLUMNS))
                     df = df.iloc[:, :n]
                     df.columns = COLUMNS[:n]
-                    # Drop the END column if present
                     if "END" in df.columns:
                         df = df.drop(columns=["END"])
-                    logger.info("Parsed headerless FBDI CSV: %d rows, %d cols", len(df), len(df.columns))
+                    logger.info("Parsed %s CSV: %d rows, %d cols (positional)",
+                                fmt, len(df), len(df.columns))
                     return df
             except Exception:
                 continue
