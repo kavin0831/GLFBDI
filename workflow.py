@@ -873,6 +873,10 @@ def _process_request_impl(request_id: str):
     # 10. Monitor ESS job
     final_status = _stage_monitor(request_id, eid)
 
+    # Visible progress: ESS done, now fetching JI jobs + logs
+    if eid not in ("-1", "QUEUED", ""):
+        _db_update(request_id, current_stage="FETCHING_LOGS")
+
     # 11. Inspect inner job statuses + try downloading logs
     log_summary = ""
     inner_failed = False
@@ -891,7 +895,7 @@ def _process_request_impl(request_id: str):
         #   `parentRequestId`), reachable through the Scheduler REST API.
         # Two-step lookup: filter parents by group_id, then pull children of those parents.
         ji_jobs: list = []
-        for attempt in range(5):
+        for attempt in range(2):
             time.sleep(3)
             # Step 1: JI parents whose submit.argument4 equals our group_id
             parents = find_journal_import_jobs(cfg, eid, scan_range=30, group_id=group_id)

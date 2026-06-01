@@ -516,7 +516,7 @@ def _try_download(cfg, request_id: str) -> bytes | None:
         for sep in (";", ","):
             finder = f"ESSJobExecutionDetailsRF;requestId={request_id}{sep}fileType={ft}"
             try:
-                r = httpx.get(url, params={"finder": finder}, auth=auth, timeout=60, headers=hdrs_get)
+                r = httpx.get(url, params={"finder": finder}, auth=auth, timeout=20, headers=hdrs_get)
                 if r.status_code == 200:
                     items = r.json().get("items", [])
                     if items and items[0].get("DocumentContent"):
@@ -538,7 +538,7 @@ def _try_download(cfg, request_id: str) -> bytes | None:
             "ParameterList": str(request_id),
         }
         try:
-            r = httpx.post(url, json=payload, auth=auth, timeout=120, headers=hdrs_json)
+            r = httpx.post(url, json=payload, auth=auth, timeout=25, headers=hdrs_json)
             if r.status_code in (200, 201):
                 j = r.json()
                 if j.get("DocumentContent"):
