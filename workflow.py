@@ -603,17 +603,18 @@ def _validate_zip_csv(req_id: str, zip_path: str) -> tuple[bool, list[str], int]
 def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     """
     Submit an already-formatted GlInterface.zip directly to Oracle.
-    Validates the CSV data inside before submitting.
+    Validates the CSV data inside before submitting, persists the ZIP+CSV
+    bytes to MongoDB so the /download endpoints work, then runs the same
+    JI correlation + log download as the full pipeline.
     """
     logger.info("Direct FBDI submission for %s", request_id)
     _db_update(request_id, status="PROCESSING", current_stage="VALIDATING_ZIP",
-               fbdi_zip_path=str(zip_path))
+               fbdi_zip_path=zip_path.name)
 
     # Validate CSV inside the ZIP before submitting
     is_valid, val_errors, row_count = _validate_zip_csv(request_id, str(zip_path))
     _db_update(request_id, total_rows=row_count)
     if not is_valid and val_errors:
-        # Non-fatal: log warnings but only hard-fail if no rows at all
         for e in val_errors:
             append_log(request_id, "WARNING", f"ZIP validation: {e}")
         if row_count == 0:
@@ -625,18 +626,90 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
         append_log(request_id, "INFO",
                    f"ZIP validated OK: {row_count} rows, {len(val_errors)} warnings")
 
+    # Persist the FBDI ZIP and the CSV inside it into MongoDB so the
+    # request detail page's Downloads card can serve them.
+    try:
+        zip_bytes = zip_path.read_bytes()
+        store_generated_file(request_id, "fbdi_zip", "GlInterface.zip", zip_bytes)
+        import zipfile as _zf, io
+        with _zf.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            csv_name = next((n for n in zf.namelist()
+                             if n.lower().endswith(".csv") and not n.startswith("__")), None)
+            if csv_name:
+                store_generated_file(request_id, "fbdi_csv", "GlInterface.csv", zf.read(csv_name))
+        _db_update(request_id,
+                   fbdi_zip_hash=hash_file(zip_path),
+                   fbdi_csv_path="GlInterface.csv")
+    except Exception as e:
+        logger.warning("Could not persist pre-built FBDI to MongoDB: %s", e)
+
     _db_update(request_id, current_stage="DIRECT_SUBMIT")
 
-    eid = _stage_submit(request_id, zip_path)
+    # group_id: same hash-derived approach as the full pipeline so JI correlation works
+    group_id = str(abs(hash(request_id)) % 999999999)
+    _db_update(request_id, fusion_group_id=group_id)
+    eid = _stage_submit(request_id, zip_path, group_id=group_id)
     if eid is None:
         return
 
     cfg = get_settings()
-    from utils.fbdi_generator import _period
-    period = cfg.fusion_ledger_name  # no date to derive from
-    _send_started(request_id, 0, period)
+    _send_started(request_id, row_count, cfg.fusion_ledger_name)
 
     final_status = _stage_monitor(request_id, eid)
+
+    # Find OUR Import Journals jobs (group_id-filtered, same as full pipeline)
+    ji_jobs: list = []
+    if eid not in ("-1", "QUEUED", ""):
+        for _ in range(5):
+            time.sleep(3)
+            parents = find_journal_import_jobs(cfg, eid, scan_range=30, group_id=group_id)
+            parents = [p for p in parents if "child" not in p.get("name", "").lower()]
+            children: list = []
+            for p in parents:
+                for d in get_descendant_requests(cfg, p["request_id"]):
+                    nm = d.get("name", "")
+                    if ("Import Journals" in nm or "JournalImport" in nm) \
+                       and "child" in nm.lower():
+                        children.append({"request_id": d["request_id"], "name": nm,
+                                         "status": d.get("status", ""), "path": ""})
+            ji_jobs = parents + children
+            if ji_jobs:
+                break
+        for j in ji_jobs:
+            claim_ji_request(str(j["request_id"]), request_id, j.get("name", ""))
+
+        # Download + store ESS logs (same code path as the full pipeline)
+        try:
+            logs = download_ess_logs(cfg, eid, group_id=group_id, ji_jobs=ji_jobs)
+            if logs.get("zip_bytes"):
+                import hashlib as _hl
+                short_id = request_id[:8]
+                log_zip_name = f"{short_id}_ESS_Logs_{eid}.zip"
+                store_generated_file(request_id, "ess_log", log_zip_name, logs["zip_bytes"])
+                store_log_file(request_id, log_zip_name, logs["zip_bytes"])
+                _db_update(request_id, ess_log_path=log_zip_name,
+                           ess_log_hash=_hl.sha256(logs["zip_bytes"]).hexdigest())
+                import re as _re
+                rid_to_name = logs.get("rid_to_name", {})
+                seen_hashes: set[str] = set()
+                for fname, content in logs["files"].items():
+                    if not ("ImportJournals" in fname or "JournalImport" in fname
+                            or fname.endswith(".log") or fname.endswith(".out")):
+                        continue
+                    body_bytes = content.encode("utf-8", errors="replace")
+                    body_hash = _hl.sha256(body_bytes).hexdigest()
+                    if body_hash in seen_hashes: continue
+                    seen_hashes.add(body_hash)
+                    parts = fname.split("/", 1)
+                    download_rid = parts[0] if len(parts) > 1 else ""
+                    file_part = parts[1] if len(parts) > 1 else fname
+                    m = _re.search(r"(\d{6,})", file_part)
+                    real_rid = m.group(1) if m else download_rid
+                    proc_name = rid_to_name.get(real_rid) or rid_to_name.get(download_rid) or "ess"
+                    new_name = f"{short_id}_{proc_name}_{real_rid or download_rid}.log"
+                    store_log_file(request_id, new_name, body_bytes)
+        except Exception as e:
+            logger.warning("Could not download ESS log zip in direct_submit: %s", e)
 
     if eid in ("-1", "QUEUED", "") or final_status in ("SUCCEEDED", "WARNING", "QUEUED"):
         if eid == "-1":
