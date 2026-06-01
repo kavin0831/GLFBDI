@@ -61,8 +61,12 @@
         <button type="button" class="btn btn-outline" onclick="testGmailPassword(this)">
           &#9889; Test Connection
         </button>
+        <button type="button" class="btn btn-outline" onclick="diagnoseNetwork(this)">
+          &#128270; Network Diagnose
+        </button>
         <span id="gmail-test-msg" style="font-size:13px"></span>
       </div>
+      <pre id="gmail-diag" style="display:none;margin-top:10px;font-size:11px;background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:10px;max-height:300px;overflow:auto"></pre>
       <div class="form-hint mt-2">
         Spaces are stripped automatically. Click Save first, then Test Connection &mdash;
         the test uses the most recently saved credentials.
@@ -320,6 +324,40 @@ function testGmailPassword(btn) {
       if (msg) { msg.style.color = '#c0392b'; msg.textContent = label; }
       btn.disabled = false;
       btn.innerHTML = orig;
+    });
+}
+
+function diagnoseNetwork(btn) {
+  var box = document.getElementById('gmail-diag');
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Probing…';
+  box.style.display = 'block';
+  box.style.color = '#6b7280';
+  box.textContent = 'Running 5 network checks (≤ 40 s total)…';
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 50000);
+  fetch('/settings/network-diagnose', {method: 'POST', signal: ctrl.signal})
+    .then(r => r.json())
+    .then(d => {
+      clearTimeout(timer);
+      var lines = d.results.map(r =>
+        (r.ok ? '✓ ' : '✗ ') + r.step.padEnd(35) +
+        '  ' + r.ms + 'ms' + (r.error ? ('  →  ' + r.error) : '')
+      );
+      lines.unshift(d.ok
+        ? '── All checks passed; HF can reach Gmail IMAP & SMTP ──'
+        : '── At least one check FAILED ──');
+      if (d.resolved_ips) lines.push('', 'resolved IPs:', JSON.stringify(d.resolved_ips));
+      box.style.color = d.ok ? '#1e7e34' : '#c0392b';
+      box.textContent = lines.join('\n');
+      btn.disabled = false; btn.innerHTML = orig;
+    })
+    .catch(e => {
+      clearTimeout(timer);
+      box.style.color = '#c0392b';
+      box.textContent = 'Diagnose failed: ' + (e.message || e);
+      btn.disabled = false; btn.innerHTML = orig;
     });
 }
 

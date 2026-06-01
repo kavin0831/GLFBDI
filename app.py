@@ -406,6 +406,69 @@ async def test_gmail_app_password():
     return {"ok": ok, "message": msg}
 
 
+@app.post("/settings/network-diagnose")
+async def network_diagnose():
+    """
+    Step-by-step check of outbound connectivity needed for Gmail App Password.
+    Helps tell whether HF Spaces is blocking port 993/587 vs other failures.
+    """
+    import socket, ssl as _ssl, time
+    results = []
+
+    def step(label, fn):
+        t0 = time.monotonic()
+        try:
+            fn()
+            results.append({"step": label, "ok": True,
+                            "ms": int((time.monotonic() - t0) * 1000)})
+            return True
+        except Exception as e:
+            results.append({"step": label, "ok": False,
+                            "ms": int((time.monotonic() - t0) * 1000),
+                            "error": f"{type(e).__name__}: {str(e)[:160]}"})
+            return False
+
+    # 1. DNS lookup
+    addr = {"imap": None, "smtp": None}
+    def _dns_imap(): addr["imap"] = socket.gethostbyname("imap.gmail.com")
+    def _dns_smtp(): addr["smtp"] = socket.gethostbyname("smtp.gmail.com")
+    step("DNS resolve imap.gmail.com", _dns_imap)
+    step("DNS resolve smtp.gmail.com", _dns_smtp)
+
+    # 2. Plain TCP connect (short timeout — if blocked, fail fast)
+    def _tcp(host, port):
+        s = socket.socket(); s.settimeout(8)
+        try:
+            s.connect((host, port))
+        finally:
+            s.close()
+    step("TCP connect imap.gmail.com:993", lambda: _tcp("imap.gmail.com", 993))
+    step("TCP connect smtp.gmail.com:587", lambda: _tcp("smtp.gmail.com", 587))
+
+    # 3. TLS handshake (catches firewalls that allow TCP but block SSL)
+    def _tls(host, port):
+        ctx = _ssl.create_default_context()
+        s = socket.socket(); s.settimeout(8)
+        try:
+            s.connect((host, port))
+            with ctx.wrap_socket(s, server_hostname=host) as ss:
+                ss.recv(1)   # IMAP/SMTP both send a banner immediately
+        finally:
+            try: s.close()
+            except: pass
+    step("TLS handshake imap.gmail.com:993", lambda: _tls("imap.gmail.com", 993))
+
+    # 4. Outbound HTTPS sanity check (proves egress works at all)
+    def _https():
+        import httpx
+        r = httpx.get("https://www.google.com/generate_204", timeout=8)
+        if r.status_code not in (204, 200): raise RuntimeError(f"got {r.status_code}")
+    step("HTTPS google.com:443", _https)
+
+    overall_ok = all(r["ok"] for r in results[:5])
+    return {"ok": overall_ok, "results": results, "resolved_ips": addr}
+
+
 @app.post("/settings/save-gmail-password")
 async def save_gmail_password(
     gmail_user:         str = Form(...),
