@@ -556,6 +556,36 @@ def _gmail_oauth_redirect_uri() -> str:
     return f"{_public_base_url()}/gmail-setup/oauth-callback"
 
 
+def _safe_creds_path(cfg) -> Path:
+    """Resolve gmail_credentials_file safely; fall back to default if blank."""
+    raw = (cfg.gmail_credentials_file or "config/gmail_credentials.json").strip()
+    if not raw or Path(raw).is_dir():
+        raw = "config/gmail_credentials.json"
+    return Path(raw)
+
+
+def _safe_token_path(cfg) -> Path:
+    """Resolve gmail_token_file safely; fall back to default if blank."""
+    raw = (cfg.gmail_token_file or "config/gmail_token.json").strip()
+    if not raw or Path(raw).is_dir():
+        raw = "config/gmail_token.json"
+    return Path(raw)
+
+
+def _ensure_credentials_on_disk(creds_path: Path) -> bool:
+    """If credentials.json was wiped by an HF rebuild, restore it from MongoDB."""
+    if creds_path.is_file():
+        return True
+    from database import get_secure_file as _gsf
+    stored = _gsf("gmail_credentials")
+    if not stored:
+        return False
+    creds_path.parent.mkdir(parents=True, exist_ok=True)
+    creds_path.write_bytes(stored)
+    logger.info("Restored gmail_credentials.json from MongoDB for OAuth flow")
+    return True
+
+
 @app.get("/gmail-setup/oauth-start")
 async def gmail_oauth_start():
     """
@@ -566,8 +596,8 @@ async def gmail_oauth_start():
     """
     from google_auth_oauthlib.flow import Flow
     cfg = get_settings()
-    creds_path = Path(cfg.gmail_credentials_file)
-    if not creds_path.exists():
+    creds_path = _safe_creds_path(cfg)
+    if not _ensure_credentials_on_disk(creds_path):
         return RedirectResponse("/gmail-setup?err=Upload+credentials.json+first",
                                  status_code=303)
     try:
@@ -598,19 +628,24 @@ async def gmail_oauth_callback(code: str = "", error: str = ""):
                                  status_code=303)
     from google_auth_oauthlib.flow import Flow
     cfg = get_settings()
+    creds_path = _safe_creds_path(cfg)
+    token_path = _safe_token_path(cfg)
+    if not _ensure_credentials_on_disk(creds_path):
+        return RedirectResponse("/gmail-setup?err=Upload+credentials.json+first",
+                                 status_code=303)
     try:
         flow = Flow.from_client_secrets_file(
-            str(cfg.gmail_credentials_file),
+            str(creds_path),
             scopes=["https://www.googleapis.com/auth/gmail.modify"],
             redirect_uri=_gmail_oauth_redirect_uri(),
         )
         flow.fetch_token(code=code)
         token_json = flow.credentials.to_json()
         # Write to disk + MongoDB
-        Path(cfg.gmail_token_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(cfg.gmail_token_file).write_text(token_json)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token_json)
         store_secure_file("gmail_token", token_json.encode())
-        logger.info("Gmail OAuth callback completed — token stored")
+        logger.info("Gmail OAuth callback completed — token stored at %s", token_path)
     except Exception as e:
         return RedirectResponse(f"/gmail-setup?err=Token+exchange+failed%3A+{str(e)[:120]}",
                                  status_code=303)
