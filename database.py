@@ -422,6 +422,24 @@ def init_db():
                 {"_id": "settings", "ess_poll_seconds": {"$gte": 30}},
                 {"$set": {"ess_poll_seconds": 5}},
             )
+            # Heal Gmail file-path fields if they're missing or empty —
+            # otherwise Path("") becomes Path('.') and write_text() crashes.
+            mdb["app_settings"].update_one(
+                {"_id": "settings", "$or": [
+                    {"gmail_credentials_file": {"$exists": False}},
+                    {"gmail_credentials_file": ""},
+                    {"gmail_credentials_file": None},
+                ]},
+                {"$set": {"gmail_credentials_file": "config/gmail_credentials.json"}},
+            )
+            mdb["app_settings"].update_one(
+                {"_id": "settings", "$or": [
+                    {"gmail_token_file": {"$exists": False}},
+                    {"gmail_token_file": ""},
+                    {"gmail_token_file": None},
+                ]},
+                {"$set": {"gmail_token_file": "config/gmail_token.json"}},
+            )
         logger.info("MongoDB ready — %s", DB_NAME)
     except Exception as e:
         logger.error("MongoDB init failed: %s", e)

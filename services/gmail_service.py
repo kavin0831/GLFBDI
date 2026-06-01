@@ -29,8 +29,15 @@ def get_gmail_service():
 
     cfg = get_settings()
     creds = None
-    token_path = Path(cfg.gmail_token_file)
-    creds_path = Path(cfg.gmail_credentials_file)
+    # Fall back to defaults if MongoDB settings doc has these blank/missing —
+    # otherwise Path("") becomes Path('.') and write_text() crashes with IsADirectoryError.
+    _ct = (cfg.gmail_token_file or "config/gmail_token.json").strip() or "config/gmail_token.json"
+    _cc = (cfg.gmail_credentials_file or "config/gmail_credentials.json").strip() or "config/gmail_credentials.json"
+    token_path = Path(_ct)
+    creds_path = Path(_cc)
+    # Don't let a path that points to an existing directory through
+    if token_path.is_dir(): token_path = Path("config/gmail_token.json")
+    if creds_path.is_dir(): creds_path = Path("config/gmail_credentials.json")
 
     if not creds_path.exists():
         stored = get_secure_file("gmail_credentials")

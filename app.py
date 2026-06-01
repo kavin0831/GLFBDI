@@ -499,14 +499,17 @@ def _is_headless() -> bool:
 @app.get("/gmail-setup", response_class=HTMLResponse)
 async def gmail_setup_page(request: Request):
     cfg = get_settings()
-    creds_exists = Path(cfg.gmail_credentials_file).exists()
-    token_exists = Path(cfg.gmail_token_file).exists()
+    creds_p = _safe_creds_path(cfg)
+    token_p = _safe_token_path(cfg)
+    # Also consider MongoDB-only storage as "exists" — files get restored from
+    # MongoDB on demand, so the badge should turn green if EITHER is present.
+    from database import get_secure_file as _gsf
+    creds_exists = creds_p.is_file() or _gsf("gmail_credentials") is not None
+    token_exists = token_p.is_file() or _gsf("gmail_token") is not None
     return templates.TemplateResponse("gmail_setup.html", {
         "request": request, "creds_exists": creds_exists, "token_exists": token_exists,
-        "creds_path": cfg.gmail_credentials_file,
+        "creds_path": str(creds_p),
         "headless": _is_headless(),
-        # Pass the exact URI we will send to Google so the user can copy/paste it
-        # verbatim into Google Cloud Console → Authorized redirect URIs.
         "oauth_redirect_uri": _gmail_oauth_redirect_uri(),
     })
 
@@ -514,7 +517,7 @@ async def gmail_setup_page(request: Request):
 @app.post("/gmail-setup/upload-credentials")
 async def upload_gmail_creds(file: UploadFile = File(...)):
     cfg = get_settings()
-    dest = Path(cfg.gmail_credentials_file)
+    dest = _safe_creds_path(cfg)
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
     dest.write_bytes(content)
@@ -534,7 +537,7 @@ async def upload_gmail_token(file: UploadFile = File(...)):
     upload it here.
     """
     cfg = get_settings()
-    dest = Path(cfg.gmail_token_file)
+    dest = _safe_token_path(cfg)
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
     # Validate it parses as JSON before storing — bad tokens silently break polling
