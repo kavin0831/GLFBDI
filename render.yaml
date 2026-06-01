@@ -1,0 +1,28 @@
+# Render.com deployment — one-click setup
+# Use this when you need outbound IMAP/SMTP ports (993/587) that HF Spaces blocks.
+#
+# How to use:
+#   1. Push this repo to GitHub
+#   2. https://render.com -> New Blueprint -> connect this repo
+#   3. Render reads this file, creates the service
+#   4. Set the three secrets in Render's dashboard: MONGO_URI, MONGO_DB, FERNET_KEY
+
+services:
+  - type: web
+    name: glfbdi
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000          # Render's default; the app reads PORT from env
+      - key: MONGO_URI
+        sync: false           # set in Render dashboard, do NOT commit
+      - key: MONGO_DB
+        sync: false
+      - key: FERNET_KEY
+        sync: false
+      - key: APP_BASE_URL
+        sync: false           # set to https://<your-service>.onrender.com
