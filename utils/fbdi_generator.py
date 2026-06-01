@@ -189,7 +189,11 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
         # Map source → target. When two source columns map to the same target
         # (ambiguous ML), keep the FIRST non-empty value rather than overwriting
         # — prevents e.g. EXPENDITURE_TYPE="000" clobbering ACTUAL_FLAG="A".
+        # Also: NEVER let a user-supplied Interface Group Identifier override
+        # the value we generated — we own that field for JI correlation.
         for src, tgt in src_to_tgt.items():
+            if tgt == "Interface Group Identifier":
+                continue
             val = row.get(src,"")
             if not val or str(val).lower() in ("nan","none","null",""):
                 continue
@@ -197,12 +201,12 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
             if tgt in DATE_FIELDS:
                 v = _fmt_date(v)
             existing = gl.get(tgt, "")
-            # Allow overwriting our own constant defaults (NEW, A, Manual, etc.)
-            # but not values that came from earlier source columns mapped here.
+            # Allow overwriting our own constant defaults but never a value that
+            # came from an earlier source column mapped to the same target.
             if existing and existing not in ("NEW", "A", "Manual",
                                               "Corporate", "1.00", "USD",
                                               acct_date, now, ledger,
-                                              period, jnl_name, group_id):
+                                              period, jnl_name):
                 continue
             gl[tgt] = v
 

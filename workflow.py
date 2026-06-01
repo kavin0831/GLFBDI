@@ -22,39 +22,6 @@ from database import (JournalRequest, MappingHistory, SessionLocal, get_settings
                       claim_ji_request, get_ji_claim_owner)
 
 
-_GROUP_ID_HEADERS = (
-    "Interface Group Identifier",  # friendly FBDI name
-    "GROUP_ID", "group_id",        # Oracle DB column name
-    "Group ID", "group id",
-)
-
-
-def _group_id_from_records(records: list[dict]) -> str | None:
-    """
-    If every row in the uploaded file has the same non-empty numeric value in a
-    GROUP_ID-like column, return that value. Returns None otherwise.
-    Lets users supply their own group_id (matches Oracle's FBDI template behavior)
-    while falling back to a hash-derived id when not present.
-    """
-    if not records:
-        return None
-    seen: set[str] = set()
-    for r in records:
-        v = ""
-        for k in _GROUP_ID_HEADERS:
-            if k in r and r[k] not in (None, ""):
-                v = str(r[k]).strip()
-                break
-        if not v:
-            return None        # at least one row is missing → not uniform
-        seen.add(v)
-        if len(seen) > 1:
-            return None        # mixed values → can't pick one
-    g = seen.pop() if len(seen) == 1 else ""
-    # Oracle requires the group_id to be numeric
-    return g if g.isdigit() else None
-
-
 def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, bytes] | None:
     """
     Resolve an attachment to (filename, bytes), trying disk first then MongoDB.
@@ -819,16 +786,10 @@ def _process_request_impl(request_id: str):
         logger.warning("Period status check failed — proceeding anyway")
 
     # 8. Submit to Oracle Fusion
-    # group_id must be numeric AND match the Interface Group Identifier in GlInterface.csv
-    # — also stored on the request so we can correlate Oracle's separately-spawned
-    #   "Import Journals" jobs back to THIS submission when many run concurrently.
-    #
-    # Priority:
-    #   1. GROUP_ID from the uploaded data file IF every row has the same numeric value
-    #      (user-supplied; matches what Oracle's official FBDI templates do)
-    #   2. Derived from our internal request_id otherwise
-    group_id = _group_id_from_records(records) or str(abs(hash(request_id)) % 999999999)
-    append_log(request_id, "INFO", f"Submitting with group_id={group_id}")
+    # Always generate a unique numeric identifier from our internal request_id.
+    # Any Interface Group Identifier column in the user's data file is ignored;
+    # we control this value so concurrent submissions stay correlated.
+    group_id = str(abs(hash(request_id)) % 999999999)
     _db_update(request_id, fusion_group_id=group_id)
     eid = _stage_submit(request_id, zip_path, group_id=group_id)
     if eid is None: return  # failure already handled inside _stage_submit
@@ -891,7 +852,7 @@ def _process_request_impl(request_id: str):
         _ji_summary = ", ".join(f"{j.get('name','?')}={j.get('request_id','?')}"
                                  for j in ji_jobs)
         append_log(request_id, "INFO",
-                   f"Found {len(ji_jobs)} JI job(s) for group_id={group_id} "
+                   f"Found {len(ji_jobs)} Import Journals job(s) for this submission "
                    f"({_ji_summary})")
         for j in ji_jobs:
             j_copy = {"name": j["name"], "request_id": j["request_id"],
