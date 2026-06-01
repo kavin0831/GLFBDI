@@ -84,7 +84,7 @@ def check_period_status(cfg, ledger_name: str, period_name: str) -> str:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=4, max=30),
        retry=retry_if_exception_type(httpx.TransportError))
-def submit_fbdi(cfg, zip_path: str, group_id: str = "") -> dict:
+def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -> dict:
     """
     POST GlInterface.zip to Oracle ERP Integration importBulkData.
 
@@ -104,7 +104,11 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "") -> dict:
     #   1. Ledger Name  2. Journal Source  3. Data Access Set
     #   4. Group ID (numeric, matches Interface Group Identifier in CSV)
     #   5. Post to Suspense  6. Create Summary  7. Import DFF
-    ledger = cfg.fusion_ledger_name or "US Primary Ledger"
+    # Ledger name now comes ONLY from the caller (workflow extracts + REST-validates
+    # it from the data file). No setting-level default, no hard-coded fallback.
+    ledger = (ledger_name or "").strip()
+    if not ledger:
+        raise ValueError("submit_fbdi: ledger_name is required (resolve from the data file before calling)")
     group  = group_id or "ALL"
     param_list = f"{ledger},Manual,{ledger},{group},N,N,N"
 

@@ -172,7 +172,8 @@ def _create_and_process(req_id, email_id, sender, subject, file_name,
             file_path=file_name,  # virtual: file lives in MongoDB
             file_type=file_type, file_size_bytes=file_size,
             status="RECEIVED", current_stage="QUEUED",
-            ledger_name=cfg.fusion_ledger_name,
+            # ledger_name gets filled in by the workflow once it resolves
+            # the value from the uploaded data file via Oracle REST.
         )
         db.add(req)
         db.commit()
@@ -285,7 +286,7 @@ async def upload_file(
                 file_type=ext.lstrip("."),
                 file_size_bytes=len(content), status="RECEIVED",
                 current_stage="QUEUED",
-                ledger_name=ledger_name or cfg.fusion_ledger_name,
+                ledger_name=ledger_name or "",   # resolved later from data file
                 accounting_date=accounting_date,
                 journal_name=journal_name or Path(file.filename).stem,
                 currency_code=currency,
@@ -355,7 +356,6 @@ async def save_settings(
     fusion_url:            str = Form(...),
     fusion_username:       str = Form(...),
     fusion_password:       str = Form(...),
-    fusion_ledger_name:    str = Form(...),
     fusion_document_account: str = Form(...),
     fusion_job_name:       str = Form(...),
     gmail_subject_filter:  str = Form(...),
@@ -372,7 +372,6 @@ async def save_settings(
         cfg.fusion_url             = fusion_url
         cfg.fusion_username        = fusion_username
         cfg.fusion_password        = fusion_password
-        cfg.fusion_ledger_name     = fusion_ledger_name
         cfg.fusion_document_account= fusion_document_account
         cfg.fusion_job_name        = fusion_job_name
         cfg.gmail_subject_filter   = gmail_subject_filter

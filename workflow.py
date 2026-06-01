@@ -123,8 +123,8 @@ def _stage_discover(req_id: str, records: list[dict], cols: list[str]) -> dict:
     if ledger_cols and records:
         meta["ledger_from_data"] = str(records[0].get(ledger_cols[0], ""))
 
-    cfg = get_settings()
-    meta.setdefault("ledger_name", cfg.fusion_ledger_name)
+    # No default Ledger Name from settings — it comes from the data file
+    # (validated to be uniform in stage 4b, see _process_request_impl).
     meta.setdefault("journal_category", "Manual")
     meta.setdefault("journal_source", "Manual")
 
@@ -212,7 +212,7 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
         **meta,
         "request_id":    req_id,
         "bad_row_indices": bad_indices,
-        "ledger_name":   meta.get("ledger_name") or cfg.fusion_ledger_name,
+        "ledger_name":   meta.get("ledger_name") or "",
         # If the workflow resolved a Ledger ID via Oracle REST, pass it through.
         # build_rows already honours meta["ledger_id"] when present.
         "ledger_id":     (meta.get("ledger_id") or "").strip(),
@@ -255,12 +255,13 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
     return csv_path, zip_path, bad_csv_path
 
 
-def _stage_submit(req_id: str, zip_path: Path, group_id: str = "") -> str | None:
+def _stage_submit(req_id: str, zip_path: Path, group_id: str = "",
+                  ledger_name: str = "") -> str | None:
     """Submit GlInterface.zip. Returns fusion_request_id or None on failure."""
     _db_update(req_id, current_stage="SUBMITTING")
     cfg = get_settings()
     try:
-        resp = submit_fbdi(cfg, str(zip_path), group_id=group_id)
+        resp = submit_fbdi(cfg, str(zip_path), group_id=group_id, ledger_name=ledger_name)
         eid = str(resp.get("ReqstId",""))
         _db_update(req_id, fusion_request_id=eid or "UNKNOWN")
         if eid and eid not in ("-1", ""):
@@ -645,17 +646,63 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     except Exception as e:
         logger.warning("Could not persist pre-built FBDI to MongoDB: %s", e)
 
+    # Read the Ledger Name from inside the ZIP's CSV — required for submission
+    direct_ledger_name = ""
+    try:
+        from utils.fbdi_generator import DATA_COLS
+        import zipfile as _zf, io, csv as _csv
+        with _zf.ZipFile(zip_path) as zf:
+            csv_name = next((n for n in zf.namelist()
+                             if n.lower().endswith(".csv") and not n.startswith("__")), None)
+            if csv_name:
+                txt = zf.read(csv_name).decode("utf-8", errors="replace")
+                reader = _csv.reader(io.StringIO(txt))
+                first_row = next(reader, None)
+                # Positional layout — Ledger Name is at index 91 (headerless FBDI)
+                if first_row and len(first_row) > 91:
+                    direct_ledger_name = first_row[91].strip()
+    except Exception as e:
+        logger.warning("Could not extract Ledger Name from pre-built ZIP: %s", e)
+
+    if not direct_ledger_name:
+        msg = ("Pre-built FBDI ZIP doesn't contain a Ledger Name (column 92) — "
+               "cannot resolve target ledger for submission")
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
+
+    # Validate the ledger against Oracle's REST API
+    resolved_ldr = lookup_ledger(cfg, name=direct_ledger_name)
+    if not resolved_ldr:
+        msg = f"Ledger Name '{direct_ledger_name}' in the ZIP is not valid in Oracle"
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
+    append_log(request_id, "INFO",
+               f"Resolved ledger via REST: name='{resolved_ldr['name']}' "
+               f"id={resolved_ldr['ledger_id']}")
+    _db_update(request_id, ledger_name=resolved_ldr["name"])
+
     _db_update(request_id, current_stage="DIRECT_SUBMIT")
 
     # group_id: same hash-derived approach as the full pipeline so JI correlation works
     group_id = str(abs(hash(request_id)) % 999999999)
     _db_update(request_id, fusion_group_id=group_id)
-    eid = _stage_submit(request_id, zip_path, group_id=group_id)
+    eid = _stage_submit(request_id, zip_path, group_id=group_id,
+                        ledger_name=resolved_ldr["name"])
     if eid is None:
         return
 
     cfg = get_settings()
-    _send_started(request_id, row_count, cfg.fusion_ledger_name)
+    # Pull the ledger name we resolved before submission from the DB
+    with SessionLocal() as _db:
+        _req = _db.get(JournalRequest, request_id)
+        _ledger = (getattr(_req, "ledger_name", "") or "") if _req else ""
+    _send_started(request_id, row_count, _ledger)
 
     final_status = _stage_monitor(request_id, eid)
 
@@ -803,7 +850,6 @@ def _process_request_impl(request_id: str):
 
     # Update meta with bad indices for FBDI generator
     meta["bad_row_indices"] = bad_indices
-    meta.setdefault("ledger_name", cfg.fusion_ledger_name)
 
     # 4b. Resolve & validate the ledger against Oracle's REST API — ONCE per file.
     #
@@ -833,7 +879,15 @@ def _process_request_impl(request_id: str):
         return
 
     _data_id   = next(iter(_ids),   "")
-    _data_name = next(iter(_names), "") or (cfg.fusion_ledger_name or "").strip()
+    _data_name = next(iter(_names), "")
+    # No setting-level fallback — data file must supply at least one of ID / name
+    if not (_data_id or _data_name):
+        msg = "Data file is missing both *Ledger ID and Ledger Name"
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
 
     resolved = None
     if _data_id:
@@ -868,12 +922,12 @@ def _process_request_impl(request_id: str):
 
     # Read period from generated CSV meta
     from utils.fbdi_generator import _period
-    period = _period(meta.get("accounting_date","")) or cfg.fusion_ledger_name
+    period = _period(meta.get("accounting_date","")) or ""
 
     # Update journal metadata
     _db_update(request_id,
                journal_name=meta.get("journal_name") or Path(file_path).stem,
-               ledger_name=meta.get("ledger_name") or cfg.fusion_ledger_name,
+               ledger_name=meta.get("ledger_name") or "",
                accounting_date=meta.get("accounting_date",""),
                currency_code=meta.get("currency_code","USD"),
                journal_category=meta.get("journal_category","Manual"),
@@ -921,7 +975,8 @@ def _process_request_impl(request_id: str):
     # we control this value so concurrent submissions stay correlated.
     group_id = str(abs(hash(request_id)) % 999999999)
     _db_update(request_id, fusion_group_id=group_id)
-    eid = _stage_submit(request_id, zip_path, group_id=group_id)
+    eid = _stage_submit(request_id, zip_path, group_id=group_id,
+                        ledger_name=meta.get("ledger_name", ""))
     if eid is None: return  # failure already handled inside _stage_submit
 
     # 9. Send "FBDI Started" notification (only if no bad rows OR approved)

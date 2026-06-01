@@ -51,14 +51,6 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="fusion_ledger_name">Default Ledger Name <span class="required">*</span></label>
-          <input type="text" class="form-control" id="fusion_ledger_name" name="fusion_ledger_name"
-                 value="{{ cfg.fusion_ledger_name }}" required
-                 placeholder="US Primary Ledger">
-        </div>
-
-
-        <div class="form-group">
           <label class="form-label" for="fusion_document_account">Document Account <span class="required">*</span></label>
           <input type="text" class="form-control" id="fusion_document_account" name="fusion_document_account"
                  value="{{ cfg.fusion_document_account }}" required>
@@ -184,7 +176,6 @@ function testConnection() {
   var url      = document.getElementById('fusion_url').value;
   var user     = document.getElementById('fusion_username').value;
   var pass     = document.getElementById('fusion_password').value;
-  var ledger   = document.getElementById('fusion_ledger_name').value;
   var docacct  = document.getElementById('fusion_document_account').value;
   var jobname  = document.getElementById('fusion_job_name').value;
 

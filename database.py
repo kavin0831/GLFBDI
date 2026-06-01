@@ -352,7 +352,6 @@ _DEFAULT_SETTINGS = {
     "fusion_url":              "",
     "fusion_username":         "",
     "fusion_password":         "",
-    "fusion_ledger_name":      "US Primary Ledger",
     "fusion_document_account": "fin$/generalLedger$/import$",
     "fusion_job_name":         _CORRECT_JOB,
     "gmail_credentials_file":  "config/gmail_credentials.json",
