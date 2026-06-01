@@ -14,6 +14,7 @@ import base64
 import email
 import imaplib
 import logging
+import os
 import smtplib
 import ssl
 import uuid
@@ -47,6 +48,18 @@ def _creds() -> tuple[str, str] | None:
 
 
 def app_password_available() -> bool:
+    """
+    True only when App Password is configured AND the host can actually reach
+    IMAP/SMTP. Hugging Face Spaces blocks outbound ports 993 and 587, so we
+    skip App Password there and let polling/sending fall through to OAuth.
+    """
+    # On HF, Google Cloud Run, and similar locked-down hosts, IMAP is blocked.
+    # Detect HF specifically since it's the documented case.
+    if os.environ.get("SPACE_ID") or os.environ.get("SPACE_HOST"):
+        return False
+    # Manual opt-out for other hosts that block these ports
+    if os.environ.get("DISABLE_APP_PASSWORD", "").strip().lower() in ("1", "true", "yes"):
+        return False
     return _creds() is not None
 
 
