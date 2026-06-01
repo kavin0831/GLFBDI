@@ -196,9 +196,12 @@ def mark_failed(service, message_id: str):
 
 
 def _send_email_oauth(to: str, subject: str, html: str,
-                      attachments: list[str] | None = None) -> bool:
-    """OAuth-mode send (original implementation). Called from the top-level
-    send_email() above only when App Password isn't configured."""
+                      attachments=None) -> bool:
+    """
+    OAuth-mode send. `attachments` may contain:
+      - str / Path: a file on disk (legacy)
+      - tuple (filename, bytes): in-memory attachment (used for files stored only in MongoDB)
+    """
     try:
         service = get_gmail_service()
         msg = MIMEMultipart("mixed")
@@ -206,12 +209,20 @@ def _send_email_oauth(to: str, subject: str, html: str,
         msg["subject"] = subject
         msg.attach(MIMEText(html, "html"))
         for att in (attachments or []):
-            p = Path(att)
-            if p.exists():
-                with open(p, "rb") as f:
-                    part = MIMEApplication(f.read(), Name=p.name)
-                part["Content-Disposition"] = f'attachment; filename="{p.name}"'
+            if isinstance(att, tuple) and len(att) == 2:
+                filename, file_bytes = att
+                if not file_bytes:
+                    continue
+                part = MIMEApplication(file_bytes, Name=filename)
+                part["Content-Disposition"] = f'attachment; filename="{filename}"'
                 msg.attach(part)
+            else:
+                p = Path(att)
+                if p.exists():
+                    with open(p, "rb") as f:
+                        part = MIMEApplication(f.read(), Name=p.name)
+                    part["Content-Disposition"] = f'attachment; filename="{p.name}"'
+                    msg.attach(part)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
         logger.info("Email sent to %s via OAuth: %s", to, subject[:60])

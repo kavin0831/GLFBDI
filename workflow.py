@@ -18,7 +18,27 @@ import tempfile
 
 from database import (JournalRequest, MappingHistory, SessionLocal, get_settings,
                       store_log_file, append_log, hash_file, get_uploaded_file,
-                      store_generated_file, claim_ji_request, get_ji_claim_owner)
+                      store_generated_file, get_generated_file,
+                      claim_ji_request, get_ji_claim_owner)
+
+
+def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, bytes] | None:
+    """
+    Resolve an attachment to (filename, bytes), trying disk first then MongoDB.
+    `kind` matches what was passed to store_generated_file (fbdi_csv, fbdi_zip,
+    bad_csv, ess_log).  Returns None if neither location has the file.
+    """
+    if virtual_path and Path(virtual_path).is_file():
+        p = Path(virtual_path)
+        try:
+            return p.name, p.read_bytes()
+        except Exception:
+            pass
+    result = get_generated_file(req_id, kind)
+    if result:
+        bytes_data, filename = result
+        return filename, bytes_data
+    return None
 from services.fusion_service import (
     analyze_ess_logs, check_period_status, download_ess_logs,
     find_journal_import_jobs, get_child_requests, get_descendant_requests,
@@ -359,8 +379,12 @@ def _send_approval_email(req_id: str, token: str, good_rows: int, bad_rows: int)
 <p style="color:#999;font-size:12px">Link expires in 24 hours.</p>
 </div></body></html>"""
     from services.gmail_service import send_email
-    atts = [req.bad_data_csv_path] if req.bad_data_csv_path else []
-    send_email(cfg.notification_email, f"⚠️ Approval Required — {bad_rows} bad rows | {req.file_name}", html, atts)
+    atts = []
+    bad_att = _attachment(req_id, "bad_csv", req.bad_data_csv_path)
+    if bad_att: atts.append(bad_att)
+    send_email(cfg.notification_email,
+               f"⚠️ Approval Required — {bad_rows} bad rows | {req.file_name}",
+               html, atts)
 
 
 def _send_success(req_id: str):
@@ -459,23 +483,20 @@ def _send_failure(req_id: str, reason: str = ""):
 <p style="color:#555;font-size:13px;margin-top:12px">See attached log files for details.</p>
 </div></body></html>"""
     atts = []
-    # 1. Locally generated bad_data.csv (rows that failed OUR validation)
-    if req.bad_data_csv_path and Path(req.bad_data_csv_path).exists():
-        atts.append(req.bad_data_csv_path)
-    # 2. The actual GlInterface.csv we submitted to Oracle (so user can audit exactly what was sent)
-    if req.fbdi_csv_path and Path(req.fbdi_csv_path).exists():
-        atts.append(req.fbdi_csv_path)
-    # 3. The GlInterface.zip we submitted (in case user wants to re-import manually in Oracle UI)
-    if req.fbdi_zip_path and Path(req.fbdi_zip_path).exists():
-        atts.append(req.fbdi_zip_path)
-    # 4. Any ESS log ZIP if we managed to download it
-    if req.ess_log_path and Path(req.ess_log_path).exists():
-        atts.append(req.ess_log_path)
-    # 5. Any standalone .txt/.log files saved during analysis
+    # 1-4: Files we generated — pulled from MongoDB by kind, fallback to disk
+    for kind, virtual_path in (
+        ("bad_csv",  req.bad_data_csv_path),
+        ("fbdi_csv", req.fbdi_csv_path),
+        ("fbdi_zip", req.fbdi_zip_path),
+        ("ess_log",  req.ess_log_path),
+    ):
+        a = _attachment(req_id, kind, virtual_path)
+        if a: atts.append(a)
+    # 5. Any standalone .txt/.log files saved during analysis (legacy local-disk path)
     log_dir = STORAGE / "logs" / req_id
     if log_dir.exists():
         for f in log_dir.iterdir():
-            if f.is_file() and f.suffix in (".txt", ".log") and str(f) not in atts:
+            if f.is_file() and f.suffix in (".txt", ".log"):
                 atts.append(str(f))
     subj = f"❌ GL Import Failed — {req.file_name} | {req.current_stage}"
     if req.period_name == "Closed" or "Period" in reason:

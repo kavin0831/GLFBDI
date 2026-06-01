@@ -191,8 +191,12 @@ def mark_processed(imap_uid: str):
 # ── Outbound SMTP ─────────────────────────────────────────────────────────────
 
 def send_email(to: str, subject: str, html: str,
-               attachments: list[str] | None = None) -> bool:
-    """Send via Gmail SMTP relay using the App Password."""
+               attachments=None) -> bool:
+    """
+    Send via Gmail SMTP relay. `attachments` may contain:
+      - str / Path: file on disk
+      - tuple (filename, bytes): in-memory (MongoDB-backed files)
+    """
     c = _creds()
     if not c:
         logger.warning("send_email skipped — no Gmail App Password configured")
@@ -205,13 +209,21 @@ def send_email(to: str, subject: str, html: str,
         msg["Subject"] = subject
         msg.attach(MIMEText(html, "html"))
         for att in (attachments or []):
-            p = Path(att)
-            if not p.exists():
-                continue
-            with open(p, "rb") as f:
-                part = MIMEApplication(f.read(), Name=p.name)
-            part["Content-Disposition"] = f'attachment; filename="{p.name}"'
-            msg.attach(part)
+            if isinstance(att, tuple) and len(att) == 2:
+                filename, file_bytes = att
+                if not file_bytes:
+                    continue
+                part = MIMEApplication(file_bytes, Name=filename)
+                part["Content-Disposition"] = f'attachment; filename="{filename}"'
+                msg.attach(part)
+            else:
+                p = Path(att)
+                if not p.exists():
+                    continue
+                with open(p, "rb") as f:
+                    part = MIMEApplication(f.read(), Name=p.name)
+                part["Content-Disposition"] = f'attachment; filename="{p.name}"'
+                msg.attach(part)
 
         ctx = ssl.create_default_context()
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
