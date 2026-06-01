@@ -57,17 +57,6 @@
                  placeholder="US Primary Ledger">
         </div>
 
-        <div class="form-group">
-          <label class="form-label" for="fusion_ledger_id">Default Ledger ID</label>
-          <input type="text" class="form-control" id="fusion_ledger_id" name="fusion_ledger_id"
-                 value="{{ cfg.fusion_ledger_id or '' }}"
-                 placeholder="e.g. 300000046975971">
-          <div class="form-hint">
-            Numeric value from <code>GL_LEDGERS.LEDGER_ID</code>. Used when the uploaded
-            data file's <code>*Ledger ID</code> column is missing or Excel-mangled
-            (e.g. <code>3E+14</code>). Find it once in Oracle and paste here.
-          </div>
-        </div>
 
         <div class="form-group">
           <label class="form-label" for="fusion_document_account">Document Account <span class="required">*</span></label>
