@@ -166,7 +166,17 @@ def map_column(source_col: str, history_boost: dict[str, tuple[str, float]] | No
     Map a single source column name to the best Oracle GlInterface.csv field.
     Returns: {source_field, target_field, confidence, reason, method}
     """
-    # 0. Exact Oracle field name match (user uploaded file with Oracle column names)
+    # 0. Exact Oracle field name match against the FULL 150-column FBDI layout
+    # (handles all Segments, References, Attributes, etc. — not just the
+    # subset documented in ORACLE_FIELDS).
+    try:
+        from utils.fbdi_generator import COLUMNS as _FBDI_COLS
+        _all_fbdi_cols = set(_FBDI_COLS) - {"END"}
+    except Exception:
+        _all_fbdi_cols = _ORACLE_FIELD_SET
+    if source_col in _all_fbdi_cols:
+        return {"source_field": source_col, "target_field": source_col,
+                "confidence": 1.0, "reason": "Exact Oracle FBDI column name.", "method": "exact"}
     if source_col in _ORACLE_FIELD_SET:
         return {"source_field": source_col, "target_field": source_col,
                 "confidence": 1.0, "reason": "Exact Oracle GL field name.", "method": "exact"}
