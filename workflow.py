@@ -42,7 +42,7 @@ def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, 
 from services.fusion_service import (
     analyze_ess_logs, check_period_status, download_ess_logs,
     find_journal_import_jobs, get_child_requests, get_descendant_requests,
-    get_ess_log, get_ess_status, get_execution_details,
+    get_ess_log, get_ess_status, get_execution_details, lookup_ledger,
     scheduled_processes_url, submit_fbdi,
 )
 from services.ml_mapper import load_history_boost, map_all_columns, save_mapping_to_history
@@ -212,8 +212,10 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
         **meta,
         "request_id":    req_id,
         "bad_row_indices": bad_indices,
-        # Oracle resolves the ledger from Ledger Name; we never inject a Ledger ID
         "ledger_name":   meta.get("ledger_name") or cfg.fusion_ledger_name,
+        # If the workflow resolved a Ledger ID via Oracle REST, pass it through.
+        # build_rows already honours meta["ledger_id"] when present.
+        "ledger_id":     (meta.get("ledger_id") or "").strip(),
     }
     good_rows, bad_rows = build_rows(records, mappings, full_meta)
 
@@ -802,6 +804,36 @@ def _process_request_impl(request_id: str):
     # Update meta with bad indices for FBDI generator
     meta["bad_row_indices"] = bad_indices
     meta.setdefault("ledger_name", cfg.fusion_ledger_name)
+
+    # 4b. Resolve the ledger against Oracle's REST API
+    #
+    # Two-pass logic:
+    #   - If the data file has a *Ledger ID, validate it exists in GL_LEDGERS.
+    #     If validation fails (typo, Excel-mangled, wrong env) drop it.
+    #   - Then if we still don't have a valid ID, look up the LedgerId by
+    #     Ledger Name. Inject the resolved value into meta so build_rows
+    #     writes it into every row.
+    _data_ledger_id   = next((str(r.get("*Ledger ID","")).strip()
+                              for r in records if str(r.get("*Ledger ID","")).strip()), "")
+    _data_ledger_name = (meta.get("ledger_name") or cfg.fusion_ledger_name or "").strip()
+    resolved = None
+    if _data_ledger_id:
+        resolved = lookup_ledger(cfg, ledger_id=_data_ledger_id)
+        if not resolved:
+            append_log(request_id, "WARNING",
+                       f"Data file *Ledger ID '{_data_ledger_id}' not found in Oracle — "
+                       "will resolve by Ledger Name instead")
+    if not resolved and _data_ledger_name:
+        resolved = lookup_ledger(cfg, name=_data_ledger_name)
+    if resolved and resolved.get("ledger_id"):
+        meta["ledger_id"]   = resolved["ledger_id"]
+        meta["ledger_name"] = resolved["name"] or _data_ledger_name
+        append_log(request_id, "INFO",
+                   f"Resolved ledger via REST: name='{resolved['name']}' id={resolved['ledger_id']}")
+    elif _data_ledger_name:
+        append_log(request_id, "WARNING",
+                   f"Ledger Name '{_data_ledger_name}' could not be resolved against Oracle — "
+                   "submitting without a *Ledger ID (Oracle may reject or fall back)")
 
     # 5. Generate FBDI files
     csv_path, zip_path, bad_csv_path = _stage_generate(request_id, records, mappings, meta, bad_indices)

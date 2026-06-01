@@ -206,6 +206,74 @@ def get_child_requests(cfg, parent_request_id: str) -> list[dict]:
     return []
 
 
+# ── Ledger resolution via Oracle REST ─────────────────────────────────────────
+# In-memory cache so we don't hit Oracle for every submission.
+_LEDGER_CACHE: dict[str, dict] = {}
+
+
+def lookup_ledger(cfg, name: str = "", ledger_id: str = "") -> dict | None:
+    """
+    Resolve a ledger against Oracle's REST API.
+
+    Returns {'ledger_id': '300000046975971', 'name': 'US Primary Ledger'} on success,
+    or None when Oracle can't find a matching record.
+
+    - name='US Primary Ledger'    → look up the numeric ID
+    - ledger_id='300000046975971' → validate that this ID exists; returns the name
+
+    Results are cached in-memory by both name and ID.
+    """
+    name      = (name or "").strip()
+    ledger_id = (ledger_id or "").strip()
+    if not name and not ledger_id:
+        return None
+
+    cache_key = f"name:{name}" if name else f"id:{ledger_id}"
+    if cache_key in _LEDGER_CACHE:
+        return _LEDGER_CACHE[cache_key]
+
+    base = _base(cfg)
+    auth = _auth(cfg)
+    headers = {"Accept": "application/json"}
+
+    # Try several known LOV / resource endpoints; first hit wins.
+    if name:
+        q = f"Name='{name}'"
+    else:
+        q = f"LedgerId={ledger_id}"
+    endpoints = [
+        f"{base}/fscmRestApi/resources/11.13.18.05/ledgersLOV",
+        f"{base}/fscmRestApi/resources/11.13.18.05/primaryLedgersLOV",
+        f"{base}/fscmRestApi/resources/11.13.18.05/journalsLedgersLOV",
+    ]
+    for url in endpoints:
+        try:
+            r = httpx.get(url, params={"q": q, "fields": "LedgerId,Name"},
+                          auth=auth, timeout=15, headers=headers)
+            if r.status_code != 200:
+                continue
+            items = r.json().get("items", [])
+            if not items:
+                continue
+            item = items[0]
+            result = {
+                "ledger_id": str(item.get("LedgerId", "")),
+                "name":      str(item.get("Name", "")),
+                "source":    url.rsplit("/", 1)[-1],
+            }
+            # cache under both keys so subsequent lookups by either hit
+            _LEDGER_CACHE[f"name:{result['name']}"] = result
+            if result["ledger_id"]:
+                _LEDGER_CACHE[f"id:{result['ledger_id']}"] = result
+            logger.info("Resolved ledger '%s' -> id=%s via %s",
+                        result["name"], result["ledger_id"], result["source"])
+            return result
+        except Exception as e:
+            logger.debug("lookup_ledger via %s failed: %s", url, e)
+    logger.warning("lookup_ledger found no ledger for name=%r id=%r", name, ledger_id)
+    return None
+
+
 def get_ji_group_id(cfg, ji_request_id: str) -> str | None:
     """
     Read the Group ID (submit.argument4) from an Import Journals ESS request via
