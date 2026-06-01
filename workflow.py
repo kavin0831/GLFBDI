@@ -212,8 +212,9 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
         **meta,
         "request_id":    req_id,
         "bad_row_indices": bad_indices,
-        # Ensure ledger_name falls back to Settings
+        # Fall back to Settings if the data file didn't supply these
         "ledger_name":   meta.get("ledger_name") or cfg.fusion_ledger_name,
+        "ledger_id":     meta.get("ledger_id")   or (cfg.fusion_ledger_id or "").strip(),
     }
     good_rows, bad_rows = build_rows(records, mappings, full_meta)
 

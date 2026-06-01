@@ -356,6 +356,7 @@ async def save_settings(
     fusion_username:       str = Form(...),
     fusion_password:       str = Form(...),
     fusion_ledger_name:    str = Form(...),
+    fusion_ledger_id:      str = Form(""),
     fusion_document_account: str = Form(...),
     fusion_job_name:       str = Form(...),
     gmail_subject_filter:  str = Form(...),
@@ -373,6 +374,7 @@ async def save_settings(
         cfg.fusion_username        = fusion_username
         cfg.fusion_password        = fusion_password
         cfg.fusion_ledger_name     = fusion_ledger_name
+        cfg.fusion_ledger_id       = fusion_ledger_id.strip()
         cfg.fusion_document_account= fusion_document_account
         cfg.fusion_job_name        = fusion_job_name
         cfg.gmail_subject_filter   = gmail_subject_filter

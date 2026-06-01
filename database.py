@@ -353,6 +353,9 @@ _DEFAULT_SETTINGS = {
     "fusion_username":         "",
     "fusion_password":         "",
     "fusion_ledger_name":      "US Primary Ledger",
+    "fusion_ledger_id":        "",   # numeric Oracle ledger_id (looked up in GL_LEDGERS),
+                                     # used when the data file's *Ledger ID is missing or
+                                     # got Excel-mangled into scientific notation
     "fusion_document_account": "fin$/generalLedger$/import$",
     "fusion_job_name":         _CORRECT_JOB,
     "gmail_credentials_file":  "config/gmail_credentials.json",
