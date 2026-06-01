@@ -123,12 +123,11 @@ def _smart_csv(path: str) -> pd.DataFrame:
                     df.columns = COLUMNS[:n]
                     if "END" in df.columns:
                         df = df.drop(columns=["END"])
-                    # Excel mangling guard: if a row passed through Excel,
-                    # 15-digit numeric IDs (like *Ledger ID 300000046975971)
-                    # get exported as scientific notation '3E+14'. Oracle then
-                    # interprets that as 3×10^14 — a different ledger — and
-                    # Import Journals processes 0 rows. Clear the column so
-                    # Oracle resolves by Ledger Name instead.
+                    # Excel mangling guard: if a row passed through Excel, long
+                    # numeric IDs (like *Ledger ID) get exported as scientific
+                    # notation (e.g. '3E+14') which Oracle would interpret as a
+                    # different number. Clear the column so Oracle resolves the
+                    # ledger by Ledger Name instead of using a corrupted value.
                     if "*Ledger ID" in df.columns:
                         bad = df["*Ledger ID"].astype(str).str.contains(
                             r"[eE]\+", regex=True, na=False)
