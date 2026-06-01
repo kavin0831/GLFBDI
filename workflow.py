@@ -805,35 +805,60 @@ def _process_request_impl(request_id: str):
     meta["bad_row_indices"] = bad_indices
     meta.setdefault("ledger_name", cfg.fusion_ledger_name)
 
-    # 4b. Resolve the ledger against Oracle's REST API
+    # 4b. Resolve & validate the ledger against Oracle's REST API — ONCE per file.
     #
-    # Two-pass logic:
-    #   - If the data file has a *Ledger ID, validate it exists in GL_LEDGERS.
-    #     If validation fails (typo, Excel-mangled, wrong env) drop it.
-    #   - Then if we still don't have a valid ID, look up the LedgerId by
-    #     Ledger Name. Inject the resolved value into meta so build_rows
-    #     writes it into every row.
-    _data_ledger_id   = next((str(r.get("*Ledger ID","")).strip()
-                              for r in records if str(r.get("*Ledger ID","")).strip()), "")
-    _data_ledger_name = (meta.get("ledger_name") or cfg.fusion_ledger_name or "").strip()
+    # Rules:
+    #   - All rows in the file must agree on *Ledger ID and on Ledger Name.
+    #     Mixed values within one file = bad data → fail the whole submission.
+    #   - When the data has one ID OR one name, make exactly ONE REST call to
+    #     validate / resolve it. Inject the result into meta so build_rows
+    #     writes the same ID into every row.
+    _ids   = {str(r.get("*Ledger ID","")).strip()  for r in records}
+    _names = {str(r.get("Ledger Name","")).strip() for r in records}
+    _ids.discard("");  _names.discard("")
+
+    if len(_ids) > 1:
+        msg = f"Data file has mixed *Ledger ID values across rows: {sorted(_ids)}"
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
+    if len(_names) > 1:
+        msg = f"Data file has mixed Ledger Name values across rows: {sorted(_names)}"
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
+
+    _data_id   = next(iter(_ids),   "")
+    _data_name = next(iter(_names), "") or (cfg.fusion_ledger_name or "").strip()
+
     resolved = None
-    if _data_ledger_id:
-        resolved = lookup_ledger(cfg, ledger_id=_data_ledger_id)
+    if _data_id:
+        resolved = lookup_ledger(cfg, ledger_id=_data_id)
         if not resolved:
             append_log(request_id, "WARNING",
-                       f"Data file *Ledger ID '{_data_ledger_id}' not found in Oracle — "
-                       "will resolve by Ledger Name instead")
-    if not resolved and _data_ledger_name:
-        resolved = lookup_ledger(cfg, name=_data_ledger_name)
+                       f"Data file *Ledger ID '{_data_id}' not found in Oracle — "
+                       "falling back to Ledger Name lookup")
+    if not resolved and _data_name:
+        resolved = lookup_ledger(cfg, name=_data_name)
+
     if resolved and resolved.get("ledger_id"):
         meta["ledger_id"]   = resolved["ledger_id"]
-        meta["ledger_name"] = resolved["name"] or _data_ledger_name
+        meta["ledger_name"] = resolved["name"] or _data_name
         append_log(request_id, "INFO",
-                   f"Resolved ledger via REST: name='{resolved['name']}' id={resolved['ledger_id']}")
-    elif _data_ledger_name:
-        append_log(request_id, "WARNING",
-                   f"Ledger Name '{_data_ledger_name}' could not be resolved against Oracle — "
-                   "submitting without a *Ledger ID (Oracle may reject or fall back)")
+                   f"Resolved ledger once via REST: name='{resolved['name']}' "
+                   f"id={resolved['ledger_id']} (applied to all {len(records)} rows)")
+    elif _data_name:
+        msg = (f"Ledger Name '{_data_name}' is not a valid Oracle ledger "
+               "and the data file has no usable *Ledger ID")
+        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                   error_message=msg, stop_reason=msg)
+        append_log(request_id, "ERROR", msg)
+        _send_failure(request_id, msg)
+        return
 
     # 5. Generate FBDI files
     csv_path, zip_path, bad_csv_path = _stage_generate(request_id, records, mappings, meta, bad_indices)
