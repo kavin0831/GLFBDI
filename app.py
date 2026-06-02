@@ -321,7 +321,12 @@ async def upload_file(
         content = await file.read()
 
         # All data lives in MongoDB — nothing written to local disk.
-        store_uploaded_file(req_id, file.filename, content)
+        # Use the verified-store helper so a silent encrypt / write failure
+        # surfaces in logs instead of producing an orphan request with no
+        # Downloads entry. Skip the request entirely if storage fails.
+        if not _store_and_verify_upload(req_id, file.filename, content, "manual_upload"):
+            errors.append(f"{file.filename}: storage failed — see server log")
+            continue
 
         with SessionLocal() as db:
             req = JournalRequest(
