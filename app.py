@@ -407,7 +407,7 @@ async def save_settings(
     fusion_password:       str = Form(...),
     fusion_document_account: str = Form(...),
     fusion_job_name:       str = Form(...),
-    gmail_allowed_sender:  str = Form(""),
+    gmail_subject_filter:  str = Form(...),
     notification_email:    str = Form(...),
     gmail_poll_seconds:    int = Form(60),
     mapping_threshold:     float = Form(0.70),
@@ -423,7 +423,7 @@ async def save_settings(
         cfg.fusion_password        = fusion_password
         cfg.fusion_document_account= fusion_document_account
         cfg.fusion_job_name        = fusion_job_name
-        cfg.gmail_allowed_sender   = (gmail_allowed_sender or "").strip()
+        cfg.gmail_subject_filter   = gmail_subject_filter
         cfg.notification_email     = notification_email
         cfg.gmail_poll_seconds     = gmail_poll_seconds
         cfg.mapping_threshold      = mapping_threshold
