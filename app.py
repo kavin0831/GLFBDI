@@ -769,13 +769,40 @@ _FTYPE_MIME = {
 }
 
 
+def _resolve_versioned_kind(req_id: str, kind: str):
+    """Return get_generated_file() result, falling back to the highest-versioned
+    {kind}_v* if the exact kind isn't present. Reprocess runs store artifacts
+    under e.g. ess_log_v1 / fbdi_zip_v2, so the legacy 'ess_log' key would
+    otherwise 404 even when the user clearly has logs for v1."""
+    result = get_generated_file(req_id, kind)
+    if result:
+        return result
+    try:
+        doc = _mdb()["generated_files"].find_one({"_id": req_id})
+        if doc:
+            candidates: list[tuple[int, str]] = []
+            for k in (doc.get("files", {}) or {}).keys():
+                if k.startswith(kind + "_v"):
+                    try:
+                        n = int(k.rsplit("_v", 1)[1])
+                        candidates.append((n, k))
+                    except ValueError:
+                        pass
+            if candidates:
+                candidates.sort(reverse=True)
+                return get_generated_file(req_id, candidates[0][1])
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/download/{req_id}/{ftype}")
 async def download_file(req_id: str, ftype: str):
     from fastapi.responses import Response
     kind = _FTYPE_TO_KIND.get(ftype)
     if not kind:
         return JSONResponse({"error": f"unknown ftype: {ftype}"}, 400)
-    result = get_generated_file(req_id, kind)
+    result = _resolve_versioned_kind(req_id, kind)
     if not result:
         return JSONResponse({"error": "file not found in DB"}, 404)
     content, filename = result
