@@ -9,8 +9,10 @@
 {% endblock %}
 
 {% block topbar_actions %}
-  {% if req.status == 'FAILED' %}
-    <button class="btn btn-primary btn-sm" onclick="retryRequest('{{ req.id }}', this)">&#8635; Retry</button>
+  {% set _failed_states = ['FAILED','VALIDATION_FAILED','IMPORT_ERRORS','ESS_FAILED','SUBMIT_REJECTED','SUBMIT_ERROR','PARSE_ERROR','PERIOD_CLOSED','REJECTED'] %}
+  {% if req.status == 'FAILED' or req.current_stage in _failed_states %}
+    <a href="/request/{{ req.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit &amp; Reprocess</a>
+    <button class="btn btn-secondary btn-sm" onclick="retryRequest('{{ req.id }}', this)">&#8635; Retry</button>
   {% endif %}
   <a href="/" class="btn btn-secondary btn-sm">&#8592; Back</a>
 {% endblock %}
@@ -255,6 +257,26 @@
       </div>
       <div class="card-body">
         <div style="display:flex;flex-direction:column;gap:10px">
+          {# Original upload #}
+          {% set _orig = none %}
+          {% for f in all_files or [] %}{% if f.kind == 'original' %}{% set _orig = f %}{% endif %}{% endfor %}
+          {% if _orig %}
+            <a href="/request/{{ req.id }}/download/{{ _orig.filename }}"
+               class="btn btn-outline" style="width:100%;text-align:left">
+              &#128206; Original (v0) — {{ _orig.filename }}
+            </a>
+          {% endif %}
+
+          {# Edited versions, sorted by version number #}
+          {% set _edits = [] %}
+          {% for f in all_files or [] %}{% if f.kind.startswith('edited_csv_v') %}{% set _ = _edits.append(f) %}{% endif %}{% endfor %}
+          {% for f in _edits | sort(attribute='kind') %}
+            <a href="/request/{{ req.id }}/download/{{ f.filename }}"
+               class="btn btn-outline" style="width:100%;text-align:left">
+              &#9998; {{ f.filename }}
+            </a>
+          {% endfor %}
+
           {% if req.fbdi_zip_path %}
             <a href="/download/{{ req.id }}/zip" class="btn btn-success" style="width:100%;text-align:left">
               &#128230; GlInterface.zip (FBDI)
@@ -275,7 +297,7 @@
               &#128196; ESS Log ZIP
             </a>
           {% endif %}
-          {% if not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
+          {% if not _orig and not _edits and not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
             <div class="text-muted small">No files available yet.</div>
           {% endif %}
         </div>

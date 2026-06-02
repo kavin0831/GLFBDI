@@ -178,11 +178,14 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
         gl["REFERENCE4 (Journal Entry Name)"] = jnl_name
         gl["Currency Conversion Type"]        = "Corporate"
         gl["Currency Conversion Date"]        = acct_date
-        # Conversion rate: USD = 1.00 (ledger currency); foreign currency must come from data.
-        # If a non-USD rate is missing, leave blank so Oracle ESS Import Journals rejects it
-        # — the rejection is captured via download_ess_logs and surfaced as bad-data feedback.
+        # Conversion rate: USD = 1.00 (ledger currency). For foreign currency we
+        # prefer meta["currency_conversion_rate"] (set by the workflow via Oracle
+        # Daily Rates REST + hardcoded fallback). If absent, mapping below may fill
+        # it from the source data; otherwise leave blank so Oracle JI flags it.
         if currency == "USD":
             gl["Currency Conversion Rate"]    = "1.00"
+        elif meta.get("currency_conversion_rate"):
+            gl["Currency Conversion Rate"]    = str(meta["currency_conversion_rate"])
         # else: rate will be filled by the source→target mapping below if provided
         gl["Interface Group Identifier"]      = group_id
 

@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Edit Request {{ req.id[:8] }} — Oracle GL FBDI{% endblock %}
+{% block topbar_title %}
+  <a href="/" style="color:#9ca3af;text-decoration:none;font-weight:400">Dashboard</a>
+  <span style="color:#d1d5db;margin:0 8px">/</span>
+  <a href="/request/{{ req.id }}" style="color:#9ca3af;text-decoration:none;font-weight:400">Request {{ req.id[:8] }}…</a>
+  <span style="color:#d1d5db;margin:0 8px">/</span>
+  Edit
+{% endblock %}
+
+{% block topbar_actions %}
+  <button class="btn btn-primary btn-sm" id="btn-save">&#128190; Save &amp; Reprocess</button>
+  <a href="/request/{{ req.id }}" class="btn btn-secondary btn-sm">Cancel</a>
+{% endblock %}
+
+{% block content %}
+<style>
+  .edit-toolbar { display:flex; gap:10px; align-items:center;
+                  margin-bottom:12px; flex-wrap:wrap; }
+  .edit-meta    { color:#6b7280; font-size:13px; margin-left:auto; }
+  .edit-tablewrap { overflow:auto; max-height:70vh; border:1px solid #e5e7eb;
+                    border-radius:6px; background:#fff; }
+  .edit-tablewrap table { border-collapse:separate; border-spacing:0;
+                          font-family: 'Consolas','Menlo','Courier New',monospace;
+                          font-size:12px; }
+  .edit-tablewrap thead th { position:sticky; top:0; background:#f3f4f6;
+                             color:#374151; padding:6px 8px;
+                             border-bottom:1px solid #d1d5db;
+                             white-space:nowrap; z-index:2; font-weight:600;
+                             min-width:140px; }
+  .edit-tablewrap thead th.col-check { min-width:36px; }
+  .edit-tablewrap td { padding:2px 4px; border-bottom:1px solid #f3f4f6;
+                       background:#fff; }
+  .edit-tablewrap td.col-check { text-align:center; width:36px; min-width:36px; }
+  .edit-tablewrap input[type=text] { width:100%; min-width:130px;
+       padding:4px 6px; border:1px solid #e5e7eb; border-radius:3px;
+       font-family:inherit; font-size:12px; background:#fafbfc; }
+  .edit-tablewrap input[type=text]:focus { outline:none; border-color:#2563eb;
+       background:#fff; }
+  .edit-tablewrap tr.row-selected td { background:#fef3c7; }
+  .edit-status { margin-top:10px; min-height:1.4em; font-size:13px; }
+  .edit-status.ok    { color:#1e8e3e; }
+  .edit-status.error { color:#c0392b; }
+</style>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">&#9998; Edit &amp; Reprocess</h2>
+    <span class="badge badge-default">v{{ version }}</span>
+  </div>
+  <div class="card-body">
+    <div class="edit-toolbar">
+      <button type="button" class="btn btn-outline btn-sm" id="btn-add">&#43; Add Row</button>
+      <button type="button" class="btn btn-outline btn-sm" id="btn-delete" style="color:#c0392b;border-color:#f5c6cb">&#128465; Delete Selected</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-inline">&#128190; Save &amp; Reprocess</button>
+      <a href="/request/{{ req.id }}" class="btn btn-secondary btn-sm">Cancel</a>
+      <div class="edit-meta">
+        <span id="row-count">{{ rows | length }}</span> rows &middot;
+        <span id="col-count">{{ headers | length }}</span> columns
+      </div>
+    </div>
+
+    <div class="edit-tablewrap" id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-check">
+              <input type="checkbox" id="check-all" title="Select all rows">
+            </th>
+            {% for h in headers %}
+              <th>{{ h }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody id="edit-tbody">
+          {% for row in rows %}
+            <tr>
+              <td class="col-check"><input type="checkbox" class="row-check"></td>
+              {% for cell in row %}
+                <td><input type="text" value="{{ cell|e }}"></td>
+              {% endfor %}
+              {# pad short rows so column counts align #}
+              {% for _ in range(headers|length - row|length) %}
+                <td><input type="text" value=""></td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="edit-status" id="edit-status"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+  const REQ_ID  = "{{ req.id }}";
+  const NUM_COLS = {{ headers | length }};
+
+  const tbody    = document.getElementById('edit-tbody');
+  const statusEl = document.getElementById('edit-status');
+  const rowCount = document.getElementById('row-count');
+
+  function recount() {
+    rowCount.textContent = tbody.querySelectorAll('tr').length;
+  }
+
+  // Add row
+  document.getElementById('btn-add').addEventListener('click', function() {
+    const tr = document.createElement('tr');
+    let html = '<td class="col-check"><input type="checkbox" class="row-check"></td>';
+    for (let i = 0; i < NUM_COLS; i++) {
+      html += '<td><input type="text" value=""></td>';
+    }
+    tr.innerHTML = html;
+    tbody.appendChild(tr);
+    recount();
+  });
+
+  // Delete selected
+  document.getElementById('btn-delete').addEventListener('click', function() {
+    const checked = tbody.querySelectorAll('tr input.row-check:checked');
+    if (!checked.length) {
+      statusEl.textContent = 'No rows selected.';
+      statusEl.className = 'edit-status error';
+      return;
+    }
+    checked.forEach(cb => cb.closest('tr').remove());
+    statusEl.textContent = 'Deleted ' + checked.length + ' row(s).';
+    statusEl.className = 'edit-status ok';
+    recount();
+  });
+
+  // Select all
+  document.getElementById('check-all').addEventListener('change', function(e) {
+    tbody.querySelectorAll('input.row-check').forEach(cb => cb.checked = e.target.checked);
+  });
+
+  // Row highlight when checked
+  tbody.addEventListener('change', function(e) {
+    if (e.target.classList && e.target.classList.contains('row-check')) {
+      e.target.closest('tr').classList.toggle('row-selected', e.target.checked);
+    }
+  });
+
+  function collectAndSave(reprocessAfter) {
+    const headers = [{% for h in headers %}{{ h|tojson }}{% if not loop.last %},{% endif %}{% endfor %}];
+    const rows = [];
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const inputs = tr.querySelectorAll('td:not(.col-check) input[type=text]');
+      const arr = [];
+      inputs.forEach(inp => arr.push(inp.value));
+      rows.push(arr);
+    });
+    statusEl.textContent = 'Saving…';
+    statusEl.className = 'edit-status';
+    return fetch('/request/' + REQ_ID + '/save_edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ headers: headers, rows: rows }),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        statusEl.textContent = 'Saved as ' + data.filename + ' (v' + data.version + '). Reprocessing…';
+        statusEl.className = 'edit-status ok';
+        if (reprocessAfter) {
+          return fetch('/request/' + REQ_ID + '/reprocess', { method: 'POST' })
+            .then(() => { window.location.href = '/request/' + REQ_ID; });
+        }
+      } else {
+        statusEl.textContent = 'Save failed: ' + (data.error || 'unknown error');
+        statusEl.className = 'edit-status error';
+      }
+    })
+    .catch(e => {
+      statusEl.textContent = 'Network error: ' + e;
+      statusEl.className = 'edit-status error';
+    });
+  }
+
+  document.getElementById('btn-save').addEventListener('click',        () => collectAndSave(true));
+  document.getElementById('btn-save-inline').addEventListener('click', () => collectAndSave(true));
+})();
+</script>
+{% endblock %}

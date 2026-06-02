@@ -42,8 +42,8 @@ def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, 
 from services.fusion_service import (
     analyze_ess_logs, check_period_status, download_ess_logs,
     find_journal_import_jobs, get_child_requests, get_descendant_requests,
-    get_ess_log, get_ess_status, get_execution_details, lookup_ledger,
-    scheduled_processes_url, submit_fbdi,
+    get_ess_log, get_ess_status, get_execution_details, get_conversion_rate,
+    lookup_ledger, purge_interface_rows, scheduled_processes_url, submit_fbdi,
 )
 from services.ml_mapper import load_history_boost, map_all_columns, save_mapping_to_history
 from utils.fbdi_generator import build_rows, package_zip, write_bad_csv, write_csv, verify_csv
@@ -97,6 +97,128 @@ def _stage_parse(req_id: str, file_path: str) -> tuple[list[dict], list[str], st
         _db_update(req_id, status="FAILED", error_message=str(e), current_stage="PARSE_ERROR")
         _send_failure(req_id, f"File could not be parsed: {e}")
         return None
+
+
+_DATE_KEYWORDS = ("date", "dt", "acctg", "effective")
+_FLAG_KEYWORDS = ("flag", "actual flag", "reversal", "average journal")
+_CCY_KEYWORDS = ("currency", "ccy", "curr")
+_AMOUNT_KEYWORDS = ("debit", "credit", "amount", "dr", "cr", "dr_amount",
+                    "cr_amount", "entered_dr", "entered_cr")
+
+_TRUE_VALUES = {"true", "y", "yes", "1", "t"}
+_FALSE_VALUES = {"false", "n", "no", "0", "f"}
+
+
+def _parse_date_any(s: str) -> str | None:
+    """Attempt to parse a date string into 'YYYY/MM/DD'. Returns None on failure."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    fmts = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d",
+            "%d-%b-%Y", "%d-%b-%y", "%Y%m%d", "%m-%d-%Y", "%d %b %Y",
+            "%d %B %Y", "%b %d, %Y", "%B %d, %Y")
+    for fmt in fmts:
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y/%m/%d")
+        except ValueError:
+            pass
+    # Last resort: dateutil
+    try:
+        from dateutil import parser as _dp
+        return _dp.parse(s, dayfirst=False).strftime("%Y/%m/%d")
+    except Exception:
+        return None
+
+
+def _stage_normalize(req_id: str, records: list[dict], cols: list[str]) -> list[dict]:
+    """
+    Auto-correct common data quirks before validation:
+    - Strip whitespace
+    - Normalize dates to YYYY/MM/DD
+    - Uppercase 3-letter currency codes
+    - Normalize Y/N flags
+    - Strip thousand separators from numeric amounts
+    Logs each correction (capped at 20 log lines to avoid spam).
+    """
+    _db_update(req_id, current_stage="NORMALIZING")
+    if not records:
+        return records
+
+    date_cols   = {c for c in cols if any(k in c.lower() for k in _DATE_KEYWORDS)}
+    ccy_cols    = {c for c in cols if any(k in c.lower() for k in _CCY_KEYWORDS)}
+    flag_cols   = {c for c in cols if any(k in c.lower() for k in _FLAG_KEYWORDS)}
+    amount_cols = {c for c in cols if any(k in c.lower() for k in _AMOUNT_KEYWORDS)}
+
+    LOG_CAP = 20
+    log_count = 0
+
+    def _log(col, old, new):
+        nonlocal log_count
+        if log_count < LOG_CAP:
+            append_log(req_id, "INFO",
+                       f"Normalized {col}: '{old}' → '{new}'")
+            log_count += 1
+
+    for row in records:
+        for col, val in list(row.items()):
+            if val is None:
+                continue
+            orig = str(val)
+            stripped = orig.strip()
+            if not stripped:
+                if stripped != orig:
+                    row[col] = stripped
+                continue
+            new_val = stripped
+
+            # Dates
+            if col in date_cols:
+                parsed = _parse_date_any(stripped)
+                if parsed and parsed != stripped:
+                    new_val = parsed
+
+            # Currency
+            elif col in ccy_cols:
+                up = stripped.upper()
+                if len(up) == 3 and up.isalpha() and up != stripped:
+                    new_val = up
+
+            # Y/N flags
+            elif col in flag_cols:
+                low = stripped.lower()
+                if low in _TRUE_VALUES:
+                    new_val = "Y"
+                elif low in _FALSE_VALUES:
+                    new_val = "N"
+
+            # Numeric amounts: strip thousand separators when value is digits-and-commas
+            if col in amount_cols and "," in new_val:
+                # Only strip commas when the remaining string after stripping commas
+                # is a clean number (digits + optional . - sign). Don't touch
+                # comma-as-decimal values like "1,50" (European style) — leave alone.
+                cleaned = new_val.replace(",", "")
+                try:
+                    float(cleaned)
+                    # Only safe if the original looks like 1,000 / 1,000.50
+                    # i.e. commas occur only between groups of 3 digits.
+                    import re as _re
+                    if _re.fullmatch(r"-?\d{1,3}(,\d{3})+(\.\d+)?", new_val):
+                        new_val = cleaned
+                except ValueError:
+                    pass
+
+            if new_val != orig:
+                _log(col, orig, new_val)
+                row[col] = new_val
+
+    if log_count >= LOG_CAP:
+        append_log(req_id, "INFO",
+                   f"_stage_normalize: more corrections applied (log capped at {LOG_CAP})")
+    append_log(req_id, "INFO",
+               f"Normalization complete: {log_count} change(s) logged "
+               f"(date_cols={len(date_cols)}, flag_cols={len(flag_cols)}, "
+               f"ccy_cols={len(ccy_cols)}, amt_cols={len(amount_cols)})")
+    return records
 
 
 def _stage_discover(req_id: str, records: list[dict], cols: list[str]) -> dict:
@@ -938,6 +1060,16 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
                         + "\n".join(analysis.get("detail_lines", [])[:10])
                     )
                     _db_update(request_id, stop_reason=direct_log_summary)
+                    # Silent purge of GL_INTERFACE for our group_id so rejected rows
+                    # don't linger and block re-submission of the same data
+                    try:
+                        purge_interface_rows(
+                            cfg, group_id,
+                            ledger_id=(resolved_ldr.get("ledger_id", "") if resolved_ldr else ""))
+                        append_log(request_id, "INFO",
+                                   f"Submitted GL_INTERFACE purge for group_id={group_id}")
+                    except Exception as _pe:
+                        logger.debug("Purge call failed silently: %s", _pe)
             except Exception as _ae:
                 logger.warning("Could not analyze ESS logs in direct_submit: %s", _ae)
         except Exception as e:
@@ -986,8 +1118,23 @@ def _process_request_impl(request_id: str):
             logger.error("Request not found: %s", request_id)
             return
         file_name = req.file_path or req.file_name or "uploaded.csv"
-        # File lives in MongoDB. Materialise it into the per-request temp dir.
-        restored = get_uploaded_file(request_id)
+        # If a user-edited revision exists, use that as the workflow input
+        # instead of the original upload.
+        latest_edit = getattr(req, "latest_edit_filename", "") or ""
+        if latest_edit:
+            edit_result = get_generated_file(request_id, f"edit_source_{latest_edit}")
+            if edit_result is None:
+                # Fall back to versioned kind name
+                edit_result = get_generated_file(request_id, latest_edit)
+            if edit_result is not None:
+                restored, _fname = edit_result
+                file_name = latest_edit
+                append_log(request_id, "INFO",
+                           f"Using edited file '{latest_edit}' as workflow input")
+            else:
+                restored = get_uploaded_file(request_id)
+        else:
+            restored = get_uploaded_file(request_id)
         if restored is None:
             _db_update(request_id, status="FAILED",
                        error_message="Source file not found in MongoDB")
@@ -1026,6 +1173,13 @@ def _process_request_impl(request_id: str):
     result = _stage_parse(request_id, file_path)
     if not result: return
     records, cols, file_fmt = result
+
+    # 1b. Auto-corrections (whitespace, dates, currency, Y/N flags, thousand separators)
+    try:
+        records = _stage_normalize(request_id, records, cols)
+    except Exception as e:
+        logger.warning("Normalize stage error (continuing): %s", e)
+        append_log(request_id, "WARNING", f"Normalize stage error: {e}")
 
     # 2. Discover metadata
     meta = _stage_discover(request_id, records, cols)
@@ -1123,6 +1277,33 @@ def _process_request_impl(request_id: str):
         append_log(request_id, "ERROR", msg)
         _send_failure(request_id, msg)
         return
+
+    # 4c. Currency conversion rate — Oracle requires this for non-functional currency
+    currency = (meta.get("currency_code") or "USD").upper()
+    functional_ccy = "USD"  # most tenants use USD; safe default for fallback
+    if currency and currency != functional_ccy:
+        try:
+            acct_date_iso = meta.get("accounting_date", "") or ""
+            # Normalize to YYYY-MM-DD for the REST API
+            iso = None
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%d-%m-%Y"):
+                try:
+                    iso = datetime.strptime(acct_date_iso.strip(), fmt).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    pass
+            if not iso:
+                iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            rate = get_conversion_rate(cfg, currency, functional_ccy, iso)
+            meta["currency_conversion_rate"] = f"{rate:.6f}".rstrip("0").rstrip(".")
+            append_log(request_id, "INFO",
+                       f"Currency conversion rate {currency}→{functional_ccy} "
+                       f"on {iso}: {meta['currency_conversion_rate']}")
+        except Exception as _fxe:
+            logger.warning("FX rate lookup failed: %s", _fxe)
+            append_log(request_id, "WARNING",
+                       f"FX rate lookup failed ({currency}): {_fxe}")
+            meta["currency_conversion_rate"] = "1.00"
 
     # 5. Generate FBDI files
     csv_path, zip_path, bad_csv_path = _stage_generate(request_id, records, mappings, meta, bad_indices)
@@ -1313,6 +1494,14 @@ def _process_request_impl(request_id: str):
     elif ess_succeeded and inner_failed:
         _db_update(request_id, status="FAILED", current_stage="IMPORT_ERRORS",
                    stop_reason=f"Oracle Journal Import rejected rows. {log_summary}")
+        # Silent purge so the rejected rows don't sit in GL_INTERFACE
+        try:
+            purge_interface_rows(cfg, group_id,
+                                 ledger_id=str(meta.get("ledger_id", "") or ""))
+            append_log(request_id, "INFO",
+                       f"Submitted GL_INTERFACE purge for group_id={group_id}")
+        except Exception as _pe:
+            logger.debug("Purge call failed silently: %s", _pe)
         _send_failure(request_id,
                       f"Oracle Fusion accepted the file but the Journal Import job rejected rows.\n\n{log_summary}")
     else:

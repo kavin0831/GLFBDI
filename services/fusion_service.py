@@ -804,6 +804,120 @@ def analyze_ess_logs(logs: dict) -> dict:
     }
 
 
+# ── Silent Interface Purge ────────────────────────────────────────────────────
+
+def purge_interface_rows(cfg, group_id: str, ledger_id: str = "",
+                        je_source: str = "Manual") -> bool:
+    """Submit Oracle's Purge Journal Import Interface ESS job for our group_id.
+    Best-effort: returns True if accepted, False on any error.
+    Silent — logs but never raises."""
+    if not group_id:
+        return False
+    url = f"{_base(cfg)}/ess/rest/scheduler/v1/requests"
+    job_attempts = [
+        {"name": "Purge Journal Import Interface",
+         "jobDefinitionName": "JournalImportPurgeJob"},
+        {"name": "JournalImportPurgeJob",
+         "jobDefinitionName": "JournalImportPurgeJob"},
+    ]
+    for attempt in job_attempts:
+        payload = {
+            "operation": "submitRequest",
+            "name": attempt["name"],
+            "jobDefinitionName": attempt["jobDefinitionName"],
+            "applicationName": "FscmEss",
+            "parameterList": [str(group_id), str(ledger_id or ""), je_source or "Manual"],
+        }
+        try:
+            r = httpx.post(url, json=payload, auth=_auth(cfg), timeout=20,
+                           headers={"Content-Type": "application/json",
+                                    "Accept": "application/json"})
+            if r.status_code in (200, 201, 202):
+                logger.info("Submitted GL_INTERFACE purge: group_id=%s ledger_id=%s status=%d",
+                            group_id, ledger_id, r.status_code)
+                return True
+        except Exception as e:
+            logger.debug("purge_interface_rows attempt failed (%s): %s",
+                         attempt["name"], e)
+    logger.warning("purge_interface_rows: could not submit purge for "
+                   "group_id=%s ledger_id=%s (all job-name variants failed)",
+                   group_id, ledger_id)
+    return False
+
+
+# ── Currency Conversion Rate ──────────────────────────────────────────────────
+
+_RATE_CACHE: dict[tuple, float] = {}
+# Hardcoded fallback for common currency pairs (mid-2024 mid-market rates).
+_FX_FALLBACK = {
+    ("USD","USD"): 1.00, ("USD","INR"): 83.0, ("USD","EUR"): 0.92,
+    ("USD","GBP"): 0.79, ("USD","JPY"): 149.0, ("USD","AUD"): 1.52,
+    ("USD","CAD"): 1.36, ("USD","CNY"): 7.24, ("USD","SGD"): 1.34,
+    ("INR","USD"): 0.012, ("EUR","USD"): 1.09, ("GBP","USD"): 1.27,
+    ("EUR","INR"): 90.0, ("GBP","INR"): 105.0,
+}
+
+
+def get_conversion_rate(cfg, from_curr: str, to_curr: str, rate_date: str,
+                       rate_type: str = "Corporate") -> float:
+    """Return FX rate from_curr → to_curr on rate_date. Tries Oracle's Daily
+    Rates REST API first; falls back to a hardcoded table on miss/error.
+    rate_date format: 'YYYY-MM-DD'."""
+    fc = (from_curr or "").strip().upper()
+    tc = (to_curr or "").strip().upper()
+    if not fc or not tc:
+        return 1.0
+    if fc == tc:
+        return 1.0
+    key = (fc, tc, rate_date, rate_type)
+    if key in _RATE_CACHE:
+        return _RATE_CACHE[key]
+
+    # 1. Try Oracle Daily Rates REST API
+    try:
+        url = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/dailyRates"
+        q = (f"FromCurrency='{fc}';ToCurrency='{tc}';"
+             f"ConversionDate='{rate_date}';ConversionRateType='{rate_type}'")
+        r = httpx.get(url, params={"q": q, "fields": "ConversionRate"},
+                      auth=_auth(cfg), timeout=15,
+                      headers={"Accept": "application/json"})
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            if items:
+                rate_val = items[0].get("ConversionRate")
+                if rate_val is not None:
+                    try:
+                        rate = float(rate_val)
+                        if rate > 0:
+                            _RATE_CACHE[key] = rate
+                            logger.info("FX rate via Oracle REST: %s→%s on %s = %s",
+                                        fc, tc, rate_date, rate)
+                            return rate
+                    except (TypeError, ValueError):
+                        pass
+    except Exception as e:
+        logger.debug("Oracle daily rates lookup failed for %s→%s: %s", fc, tc, e)
+
+    # 2. Fallback table — direct
+    if (fc, tc) in _FX_FALLBACK:
+        rate = _FX_FALLBACK[(fc, tc)]
+        _RATE_CACHE[key] = rate
+        logger.warning("FX rate via fallback table: %s→%s = %s (REST unavailable)",
+                       fc, tc, rate)
+        return rate
+    # 3. Inverse
+    if (tc, fc) in _FX_FALLBACK and _FX_FALLBACK[(tc, fc)]:
+        rate = 1.0 / _FX_FALLBACK[(tc, fc)]
+        _RATE_CACHE[key] = rate
+        logger.warning("FX rate via inverse fallback: %s→%s = %.6f", fc, tc, rate)
+        return rate
+
+    # 4. Final fallback
+    logger.warning("FX rate unknown for %s→%s — defaulting to 1.0", fc, tc)
+    _RATE_CACHE[key] = 1.0
+    return 1.0
+
+
 # ── Connection Test ───────────────────────────────────────────────────────────
 
 def test_connection(cfg) -> dict:

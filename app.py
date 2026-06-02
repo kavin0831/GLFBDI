@@ -31,7 +31,8 @@ from fastapi.templating import Jinja2Templates
 from database import (
     AppSettings, JournalRequest, SessionLocal, get_settings, init_db,
     store_log_file, store_secure_file, get_process_logs, get_log_files_meta,
-    store_uploaded_file, get_generated_file, has_generated_file,
+    store_uploaded_file, get_uploaded_file, store_generated_file,
+    get_generated_file, has_generated_file, append_log, _mdb,
 )
 from services.fusion_service import test_connection
 from services.gmail_service import gmail_available
@@ -208,9 +209,11 @@ async def request_detail(request: Request, req_id: str):
             return HTMLResponse("Not found", status_code=404)
     logs = get_process_logs(req_id)
     log_files = get_log_files_meta(req_id)
+    all_files = _all_files_for_request(req_id)
     return templates.TemplateResponse("request_detail.html", {
         "request": request, "req": req,
         "process_logs": logs, "log_files": log_files,
+        "all_files": all_files,
     })
 
 
@@ -697,6 +700,235 @@ async def download_file(req_id: str, ftype: str):
         media_type=_FTYPE_MIME.get(ftype, "application/octet-stream"),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ── Files API + per-file download ─────────────────────────────────────────────
+
+def _all_files_for_request(req_id: str) -> list[dict]:
+    """List every file (original upload + all generated kinds) for a request."""
+    out: list[dict] = []
+    try:
+        up_doc = _mdb()["uploaded_files"].find_one({"_id": req_id})
+        if up_doc:
+            out.append({
+                "kind":        "original",
+                "filename":    up_doc.get("filename", "uploaded"),
+                "size_bytes":  up_doc.get("size_bytes", 0),
+                "uploaded_at": str(up_doc.get("stored_at", "")),
+            })
+    except Exception:
+        pass
+    try:
+        gen_doc = _mdb()["generated_files"].find_one({"_id": req_id})
+        if gen_doc:
+            for kind, meta in (gen_doc.get("files", {}) or {}).items():
+                out.append({
+                    "kind":        kind,
+                    "filename":    meta.get("filename", kind),
+                    "size_bytes":  meta.get("size_bytes", 0),
+                    "uploaded_at": str(meta.get("stored_at", "")),
+                })
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/request/{req_id}/files")
+async def list_request_files(req_id: str):
+    return JSONResponse(_all_files_for_request(req_id))
+
+
+@app.get("/request/{req_id}/download/{filename}")
+async def download_request_file(req_id: str, filename: str):
+    """Download any stored file for this request by its stored filename."""
+    from fastapi.responses import Response
+    # 1. Try original upload
+    try:
+        up_doc = _mdb()["uploaded_files"].find_one({"_id": req_id})
+        if up_doc and up_doc.get("filename") == filename:
+            content = get_uploaded_file(req_id)
+            if content is not None:
+                return Response(
+                    content=content,
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+    except Exception:
+        pass
+    # 2. Search through generated files by filename
+    try:
+        gen_doc = _mdb()["generated_files"].find_one({"_id": req_id})
+        if gen_doc:
+            for kind, meta in (gen_doc.get("files", {}) or {}).items():
+                if meta.get("filename") == filename:
+                    result = get_generated_file(req_id, kind)
+                    if result:
+                        content, fname = result
+                        # MIME guessing
+                        if fname.lower().endswith(".zip"):
+                            mt = "application/zip"
+                        elif fname.lower().endswith(".csv"):
+                            mt = "text/csv"
+                        else:
+                            mt = "application/octet-stream"
+                        return Response(
+                            content=content,
+                            media_type=mt,
+                            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+                        )
+    except Exception:
+        pass
+    return JSONResponse({"error": "file not found"}, 404)
+
+
+# ── Edit & Reprocess ──────────────────────────────────────────────────────────
+
+def _parse_request_source_to_table(req_id: str):
+    """Load current source bytes for a request and parse into (headers, rows[][]).
+
+    Uses latest_edit_filename if set, otherwise the original upload. ZIPs are
+    extracted to find the CSV inside.
+    """
+    import tempfile as _tf, os as _os, zipfile as _zip, io as _io
+    from utils.fbdi_generator import DATA_COLS
+    from utils.file_parser import parse_to_records
+
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return None, None, None
+        latest = getattr(req, "latest_edit_filename", "") or ""
+        version = int(getattr(req, "version", 0) or 0)
+
+    source_bytes: bytes | None = None
+    source_name = "uploaded.csv"
+    if latest:
+        result = get_generated_file(req_id, f"edit_source_{latest}")
+        if result is None:
+            result = get_generated_file(req_id, latest)
+        if result is not None:
+            source_bytes, source_name = result
+    if source_bytes is None:
+        source_bytes = get_uploaded_file(req_id)
+        with SessionLocal() as db:
+            r = db.get(JournalRequest, req_id)
+            source_name = (r.file_name if r else "uploaded.csv") or "uploaded.csv"
+
+    if source_bytes is None:
+        return None, None, version
+
+    # If ZIP, extract the first CSV inside
+    if source_name.lower().endswith(".zip"):
+        try:
+            with _zip.ZipFile(_io.BytesIO(source_bytes)) as zf:
+                csv_name = next((n for n in zf.namelist()
+                                 if n.lower().endswith(".csv") and not n.startswith("__")), None)
+                if csv_name:
+                    source_bytes = zf.read(csv_name)
+                    source_name = csv_name
+        except Exception:
+            pass
+
+    # Write to temp + parse
+    suffix = Path(source_name).suffix or ".csv"
+    fd, tmppath = _tf.mkstemp(suffix=suffix)
+    _os.close(fd)
+    try:
+        Path(tmppath).write_bytes(source_bytes)
+        records, cols = parse_to_records(tmppath)
+    finally:
+        try: _os.remove(tmppath)
+        except Exception: pass
+
+    headers = list(DATA_COLS)
+    # Build rows aligned to DATA_COLS; pull existing values if columns match
+    rows: list[list[str]] = []
+    for rec in records:
+        row = []
+        for h in headers:
+            val = rec.get(h, "")
+            if val is None:
+                val = ""
+            row.append(str(val))
+        rows.append(row)
+    return headers, rows, version
+
+
+@app.get("/request/{req_id}/edit", response_class=HTMLResponse)
+async def edit_request(request: Request, req_id: str):
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return HTMLResponse("Not found", status_code=404)
+    headers, rows, version = _parse_request_source_to_table(req_id)
+    if headers is None:
+        return HTMLResponse("Source file not found", status_code=404)
+    return templates.TemplateResponse("edit_csv.html", {
+        "request": request, "req": req,
+        "headers": headers, "rows": rows, "version": version,
+    })
+
+
+@app.post("/request/{req_id}/save_edit")
+async def save_edit(req_id: str, request: Request):
+    """Accept JSON {headers:[...], rows:[[...]]}, write CSV, store, bump version."""
+    import csv as _csv, io as _io
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, 400)
+    headers = body.get("headers") or []
+    rows    = body.get("rows") or []
+    if not isinstance(headers, list) or not isinstance(rows, list):
+        return JSONResponse({"ok": False, "error": "headers/rows missing"}, 400)
+
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return JSONResponse({"ok": False, "error": "request not found"}, 404)
+        current_version = int(getattr(req, "version", 0) or 0)
+        new_version = current_version + 1
+        filename = f"edited_v{new_version}.csv"
+
+        # Write CSV with UTF-8 (no BOM), LF endings
+        buf = _io.StringIO(newline="")
+        w = _csv.writer(buf, lineterminator="\n", quoting=_csv.QUOTE_MINIMAL)
+        w.writerow(headers)
+        for r in rows:
+            # Normalize each row to len(headers)
+            padded = list(r) + [""] * (len(headers) - len(r))
+            w.writerow([str(c) if c is not None else "" for c in padded[:len(headers)]])
+        csv_bytes = buf.getvalue().encode("utf-8")
+
+        # Store under a versioned kind AND under an alias for the workflow loader
+        store_generated_file(req_id, f"edited_csv_v{new_version}", filename, csv_bytes)
+        store_generated_file(req_id, f"edit_source_{filename}", filename, csv_bytes)
+        req.version = new_version
+        req.latest_edit_filename = filename
+        db.commit()
+    append_log(req_id, "INFO",
+               f"User saved edit version {new_version} ({len(rows)} rows)")
+    return JSONResponse({"ok": True, "version": new_version, "filename": filename})
+
+
+@app.post("/request/{req_id}/reprocess")
+async def reprocess_request(req_id: str):
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return JSONResponse({"error": "not found"}, 404)
+        parent = getattr(req, "parent_request_id", "") or req_id
+        version = int(getattr(req, "version", 0) or 0)
+        req.parent_request_id = parent
+        req.status = "PROCESSING"
+        req.current_stage = "QUEUED"
+        req.error_message = None
+        req.stop_reason = None
+        db.commit()
+    append_log(req_id, "INFO",
+               f"=== REPROCESS triggered (edit v{version}) ===")
+    threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
+    return RedirectResponse(f"/request/{req_id}", status_code=303)
 
 
 # ── API: manual trigger ───────────────────────────────────────────────────────
