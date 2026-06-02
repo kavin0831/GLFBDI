@@ -31,6 +31,16 @@
                              white-space:nowrap; z-index:2; font-weight:600;
                              min-width:140px; }
   .edit-tablewrap thead th.col-check { min-width:36px; }
+  .edit-tablewrap thead tr.fill-row th { background:#fff7ed; border-bottom:1px solid #fed7aa;
+                                          padding:4px 6px; top:32px; }
+  .edit-tablewrap thead tr.fill-row input { width:100%; min-width:130px; padding:3px 6px;
+                                             border:1px dashed #f59e0b; border-radius:3px;
+                                             background:#fffbeb; font-family:inherit;
+                                             font-size:12px; color:#7c2d12; }
+  .edit-tablewrap thead tr.fill-row input:focus { outline:none; border-style:solid;
+                                                   background:#fff; }
+  .edit-tablewrap thead tr.fill-row .fill-label { color:#9a3412; font-weight:600;
+                                                  font-size:11px; letter-spacing:.3px; }
   .edit-tablewrap td { padding:2px 4px; border-bottom:1px solid #f3f4f6;
                        background:#fff; }
   .edit-tablewrap td.col-check { text-align:center; width:36px; min-width:36px; }
@@ -65,6 +75,13 @@
     <div class="edit-tablewrap" id="table-wrap">
       <table>
         <thead>
+          <tr class="fill-row" title="Type a value and tab/click out — it fills every row in this column">
+            <th class="col-check"><span class="fill-label">FILL&nbsp;ALL&nbsp;&#8595;</span></th>
+            {% for h in headers %}
+              <th><input type="text" class="fill-input" data-col="{{ loop.index0 }}"
+                         placeholder="Apply to all" autocomplete="off"></th>
+            {% endfor %}
+          </tr>
           <tr>
             <th class="col-check">
               <input type="checkbox" id="check-all" title="Select all rows">
@@ -110,6 +127,38 @@
   function recount() {
     rowCount.textContent = tbody.querySelectorAll('tr').length;
   }
+
+  // Fill-column row: when a user types a value in one of these inputs and
+  // moves focus away (blur) or hits Enter/Tab, copy that value into every
+  // row's cell in the same column.
+  function applyFillToColumn(colIdx, value) {
+    if (value === '' || value == null) return 0;
+    let filled = 0;
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const cells = tr.querySelectorAll('td:not(.col-check) input[type=text]');
+      if (cells[colIdx]) {
+        cells[colIdx].value = value;
+        filled++;
+      }
+    });
+    return filled;
+  }
+  document.querySelectorAll('input.fill-input').forEach(inp => {
+    const apply = function() {
+      const colIdx = parseInt(inp.dataset.col, 10);
+      const v = inp.value;
+      if (v === '' || isNaN(colIdx)) return;
+      const n = applyFillToColumn(colIdx, v);
+      statusEl.textContent = 'Filled "' + v + '" into ' + n + ' row(s) in column ' + (colIdx+1) + '.';
+      statusEl.className = 'edit-status ok';
+    };
+    inp.addEventListener('blur', apply);
+    inp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        apply();
+      }
+    });
+  });
 
   // Add row
   document.getElementById('btn-add').addEventListener('click', function() {

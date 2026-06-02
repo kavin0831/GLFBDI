@@ -12,7 +12,6 @@
   {% set _failed_states = ['FAILED','VALIDATION_FAILED','IMPORT_ERRORS','ESS_FAILED','SUBMIT_REJECTED','SUBMIT_ERROR','PARSE_ERROR','PERIOD_CLOSED','REJECTED'] %}
   {% if req.status == 'FAILED' or req.current_stage in _failed_states %}
     <a href="/request/{{ req.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit &amp; Reprocess</a>
-    <button class="btn btn-secondary btn-sm" onclick="retryRequest('{{ req.id }}', this)">&#8635; Retry</button>
   {% endif %}
   <a href="/" class="btn btn-secondary btn-sm">&#8592; Back</a>
 {% endblock %}

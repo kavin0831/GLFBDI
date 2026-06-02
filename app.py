@@ -241,6 +241,44 @@ async def dashboard(request: Request):
     })
 
 
+# ── All Requests page (no row limit, with filter + search) ────────────────────
+@app.get("/requests", response_class=HTMLResponse)
+async def all_requests(request: Request, q: str = "", status: str = ""):
+    """Full listing of every request, with optional search and status filter."""
+    q = (q or "").strip()
+    status = (status or "").strip()
+    with SessionLocal() as db:
+        total    = db.query(JournalRequest).count()
+        success  = db.query(JournalRequest).filter_by(status="SUCCEEDED").count()
+        failed   = db.query(JournalRequest).filter_by(status="FAILED").count()
+        running  = db.query(JournalRequest).filter(
+            {"status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
+
+        # Build the filter for the result list
+        mongo_filter: dict = {}
+        if status:
+            mongo_filter["status"] = status
+        if q:
+            # Case-insensitive substring across file_name / sender_email / email_subject
+            import re as _re
+            rx = {"$regex": _re.escape(q), "$options": "i"}
+            mongo_filter["$or"] = [
+                {"file_name":     rx},
+                {"sender_email":  rx},
+                {"email_subject": rx},
+                {"journal_name":  rx},
+            ]
+        reqs = (db.query(JournalRequest)
+                  .filter(mongo_filter)
+                  .order_by(("created_at", -1))
+                  .all())
+    return templates.TemplateResponse("requests_all.html", {
+        "request": request, "requests": reqs,
+        "total": total, "success": success, "failed": failed, "running": running,
+        "q": q, "status_filter": status,
+    })
+
+
 # ── Request detail ────────────────────────────────────────────────────────────
 @app.get("/request/{req_id}", response_class=HTMLResponse)
 async def request_detail(request: Request, req_id: str):
