@@ -257,13 +257,13 @@
       </div>
       <div class="card-body">
         <div style="display:flex;flex-direction:column;gap:10px">
-          {# Original upload #}
-          {% set _orig = none %}
-          {% for f in all_files or [] %}{% if f.kind == 'original' %}{% set _orig = f %}{% endif %}{% endfor %}
-          {% if _orig %}
-            <a href="/request/{{ req.id }}/download/{{ _orig.filename }}"
+          {# Original upload — use namespace so the inner {% set %} survives outside the loop #}
+          {% set ns = namespace(orig=none) %}
+          {% for f in all_files or [] %}{% if f.kind == 'original' %}{% set ns.orig = f %}{% endif %}{% endfor %}
+          {% if ns.orig %}
+            <a href="/request/{{ req.id }}/download/{{ ns.orig.filename }}"
                class="btn btn-outline" style="width:100%;text-align:left">
-              &#128206; Original (v0) — {{ _orig.filename }}
+              &#128206; Original (v0) — {{ ns.orig.filename }}
             </a>
           {% endif %}
 
@@ -297,7 +297,7 @@
               &#128196; ESS Log ZIP
             </a>
           {% endif %}
-          {% if not _orig and not _edits and not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
+          {% if not ns.orig and not _edits and not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
             <div class="text-muted small">No files available yet.</div>
           {% endif %}
         </div>

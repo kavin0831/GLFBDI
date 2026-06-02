@@ -1147,23 +1147,42 @@ def _process_request_impl(request_id: str):
             logger.error("Request not found: %s", request_id)
             return
         file_name = req.file_path or req.file_name or "uploaded.csv"
-        # If a user-edited revision exists, use that as the workflow input
-        # instead of the original upload.
-        latest_edit = getattr(req, "latest_edit_filename", "") or ""
-        if latest_edit:
-            edit_result = get_generated_file(request_id, f"edit_source_{latest_edit}")
-            if edit_result is None:
-                # Fall back to versioned kind name
-                edit_result = get_generated_file(request_id, latest_edit)
-            if edit_result is not None:
-                restored, _fname = edit_result
-                file_name = latest_edit
-                append_log(request_id, "INFO",
-                           f"Using edited file '{latest_edit}' as workflow input")
-            else:
-                restored = get_uploaded_file(request_id)
-        else:
+        # If any user-edited revision exists, use the latest one as the
+        # workflow input instead of the original upload. We don't rely on
+        # `latest_edit_filename` alone — scan generated_files directly so
+        # a missed commit on that field can never silently send us back
+        # to the original file.
+        restored = None
+        chosen_label = ""
+        try:
+            from database import _mdb as _db_mdb
+            gen_doc = _db_mdb()["generated_files"].find_one({"_id": request_id})
+            edit_versions: list[tuple[int, str]] = []
+            if gen_doc:
+                for kind in (gen_doc.get("files", {}) or {}).keys():
+                    if kind.startswith("edited_csv_v"):
+                        try:
+                            n = int(kind.rsplit("_v", 1)[1])
+                            edit_versions.append((n, kind))
+                        except ValueError:
+                            pass
+            edit_versions.sort(reverse=True)
+            if edit_versions:
+                highest_n, highest_kind = edit_versions[0]
+                edit_result = get_generated_file(request_id, highest_kind)
+                if edit_result is not None:
+                    restored, fname = edit_result
+                    file_name = fname or f"edited_v{highest_n}.csv"
+                    chosen_label = f"edited v{highest_n} ({file_name})"
+        except Exception as _e:
+            logger.warning("Edit-version lookup failed for %s: %s", request_id, _e)
+
+        if restored is None:
             restored = get_uploaded_file(request_id)
+            chosen_label = "original upload"
+
+        append_log(request_id, "INFO",
+                   f"Workflow source = {chosen_label}")
         if restored is None:
             _db_update(request_id, status="FAILED",
                        error_message="Source file not found in MongoDB")
