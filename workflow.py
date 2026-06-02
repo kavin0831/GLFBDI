@@ -360,16 +360,24 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
         append_log(req_id, "INFO",
                    f"GlInterface.csv verified OK — {len(good_rows)} rows, each ends with END")
 
-    # Persist all generated files to MongoDB — local disk is just a working area
-    store_generated_file(req_id, "fbdi_csv", csv_path.name, csv_path.read_bytes())
-    store_generated_file(req_id, "fbdi_zip", zip_path.name, zip_path.read_bytes())
+    # Persist all generated files to MongoDB — local disk is just a working area.
+    # Version-tag filenames so reprocesses don't overwrite earlier artifacts.
+    with SessionLocal() as _vdb:
+        _vreq = _vdb.get(JournalRequest, req_id)
+        _ver  = int(getattr(_vreq, "version", 0) or 0)
+    v_tag = f"v{_ver}"
+    csv_versioned = f"{Path(csv_path.name).stem}_{v_tag}.csv"
+    zip_versioned = f"{Path(zip_path.name).stem}_{v_tag}.zip"
+    store_generated_file(req_id, f"fbdi_csv_{v_tag}", csv_versioned, csv_path.read_bytes())
+    store_generated_file(req_id, f"fbdi_zip_{v_tag}", zip_versioned, zip_path.read_bytes())
     if bad_csv_path:
-        store_generated_file(req_id, "bad_csv", bad_csv_path.name, bad_csv_path.read_bytes())
+        bad_versioned = f"{Path(bad_csv_path.name).stem}_{v_tag}.csv"
+        store_generated_file(req_id, f"bad_csv_{v_tag}", bad_versioned, bad_csv_path.read_bytes())
 
     _db_update(req_id,
-               fbdi_csv_path=csv_path.name,   # virtual: name only
-               fbdi_zip_path=zip_path.name,
-               bad_data_csv_path=bad_csv_path.name if bad_csv_path else None,
+               fbdi_csv_path=csv_versioned,   # virtual: name only
+               fbdi_zip_path=zip_versioned,
+               bad_data_csv_path=(bad_versioned if bad_csv_path else None),
                good_rows=len(good_rows), bad_rows=len(bad_rows),
                fbdi_csv_hash=hash_file(csv_path),
                fbdi_zip_hash=hash_file(zip_path),
@@ -866,17 +874,24 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     # Persist the FBDI ZIP and the CSV inside it into MongoDB so the
     # request detail page's Downloads card can serve them.
     try:
+        with SessionLocal() as _vdb:
+            _vreq = _vdb.get(JournalRequest, request_id)
+            _ver  = int(getattr(_vreq, "version", 0) or 0)
+        v_tag = f"v{_ver}"
         zip_bytes = zip_path.read_bytes()
-        store_generated_file(request_id, "fbdi_zip", "GlInterface.zip", zip_bytes)
+        store_generated_file(request_id, f"fbdi_zip_{v_tag}",
+                             f"GlInterface_{v_tag}.zip", zip_bytes)
         import zipfile as _zf, io
         with _zf.ZipFile(io.BytesIO(zip_bytes)) as zf:
             csv_name = next((n for n in zf.namelist()
                              if n.lower().endswith(".csv") and not n.startswith("__")), None)
             if csv_name:
-                store_generated_file(request_id, "fbdi_csv", "GlInterface.csv", zf.read(csv_name))
+                store_generated_file(request_id, f"fbdi_csv_{v_tag}",
+                                     f"GlInterface_{v_tag}.csv", zf.read(csv_name))
         _db_update(request_id,
+                   fbdi_zip_path=f"GlInterface_{v_tag}.zip",
                    fbdi_zip_hash=hash_file(zip_path),
-                   fbdi_csv_path="GlInterface.csv")
+                   fbdi_csv_path=f"GlInterface_{v_tag}.csv")
     except Exception as e:
         logger.warning("Could not persist pre-built FBDI to MongoDB: %s", e)
 
@@ -976,14 +991,22 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
                        f"No GROUP_ID in CSV — generated {group_id} and patched ZIP")
             # Refresh stored ZIP/CSV in MongoDB so audit reflects what we sent
             try:
+                with SessionLocal() as _vdb2:
+                    _vreq2 = _vdb2.get(JournalRequest, request_id)
+                    _ver2  = int(getattr(_vreq2, "version", 0) or 0)
+                v_tag2 = f"v{_ver2}"
                 zb = zip_path.read_bytes()
-                store_generated_file(request_id, "fbdi_zip", "GlInterface.zip", zb)
+                store_generated_file(request_id, f"fbdi_zip_{v_tag2}",
+                                     f"GlInterface_{v_tag2}.zip", zb)
                 with _zfw.ZipFile(_iow.BytesIO(zb)) as _zr:
                     cn = next((n for n in _zr.namelist()
                                if n.lower().endswith(".csv") and not n.startswith("__")), None)
                     if cn:
-                        store_generated_file(request_id, "fbdi_csv",
-                                             "GlInterface.csv", _zr.read(cn))
+                        store_generated_file(request_id, f"fbdi_csv_{v_tag2}",
+                                             f"GlInterface_{v_tag2}.csv", _zr.read(cn))
+                _db_update(request_id,
+                           fbdi_zip_path=f"GlInterface_{v_tag2}.zip",
+                           fbdi_csv_path=f"GlInterface_{v_tag2}.csv")
             except Exception as _se:
                 logger.warning("Could not re-store patched ZIP/CSV: %s", _se)
         except Exception as _e:
@@ -1024,8 +1047,14 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
             if logs.get("zip_bytes"):
                 import hashlib as _hl
                 short_id = request_id[:8]
-                log_zip_name = f"{short_id}_ESS_Logs_{eid}.zip"
-                store_generated_file(request_id, "ess_log", log_zip_name, logs["zip_bytes"])
+                # Version-tag filenames so reprocessed runs don't get mixed up
+                # with the original submission in the Downloads sidebar.
+                with SessionLocal() as _vdb:
+                    _vreq = _vdb.get(JournalRequest, request_id)
+                    _ver  = int(getattr(_vreq, "version", 0) or 0)
+                v_tag = f"v{_ver}"
+                log_zip_name = f"{short_id}_{v_tag}_ESS_Logs_{eid}.zip"
+                store_generated_file(request_id, f"ess_log_{v_tag}", log_zip_name, logs["zip_bytes"])
                 store_log_file(request_id, log_zip_name, logs["zip_bytes"])
                 _db_update(request_id, ess_log_path=log_zip_name,
                            ess_log_hash=_hl.sha256(logs["zip_bytes"]).hexdigest())
@@ -1046,7 +1075,7 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
                     m = _re.search(r"(\d{6,})", file_part)
                     real_rid = m.group(1) if m else download_rid
                     proc_name = rid_to_name.get(real_rid) or rid_to_name.get(download_rid) or "ess"
-                    new_name = f"{short_id}_{proc_name}_{real_rid or download_rid}.log"
+                    new_name = f"{short_id}_{v_tag}_{proc_name}_{real_rid or download_rid}.log"
                     store_log_file(request_id, new_name, body_bytes)
             # Inspect log content for hidden failures (e.g. SQL*Loader OK but
             # Journal Import "Total: 0 group id(s)" → ESS shows SUCCEEDED but
@@ -1435,9 +1464,14 @@ def _process_request_impl(request_id: str):
             if logs.get("zip_bytes"):
                 import hashlib as _hl
                 short_id = request_id[:8]
-                # Combined zip name follows the {request_id}_{process_name} convention
-                log_zip_name = f"{short_id}_ESS_Logs_{eid}.zip"
-                store_generated_file(request_id, "ess_log", log_zip_name, logs["zip_bytes"])
+                # Version-tag log filenames so reprocessed runs don't get mixed
+                # up with the original submission in the Downloads sidebar.
+                with SessionLocal() as _vdb:
+                    _vreq = _vdb.get(JournalRequest, request_id)
+                    _ver  = int(getattr(_vreq, "version", 0) or 0)
+                v_tag = f"v{_ver}"
+                log_zip_name = f"{short_id}_{v_tag}_ESS_Logs_{eid}.zip"
+                store_generated_file(request_id, f"ess_log_{v_tag}", log_zip_name, logs["zip_bytes"])
                 store_log_file(request_id, log_zip_name, logs["zip_bytes"])
                 _db_update(request_id,
                            ess_log_path=log_zip_name,
@@ -1472,7 +1506,7 @@ def _process_request_impl(request_id: str):
                                 or rid_to_name.get(download_rid) \
                                 or "ess"
 
-                    new_name = f"{short_id}_{proc_name}_{real_rid or download_rid}.log"
+                    new_name = f"{short_id}_{v_tag}_{proc_name}_{real_rid or download_rid}.log"
                     store_log_file(request_id, new_name, body_bytes)
 
                 # If we got logs, parse for granular error codes
