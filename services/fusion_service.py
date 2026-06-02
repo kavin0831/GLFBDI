@@ -766,14 +766,32 @@ def analyze_ess_logs(logs: dict) -> dict:
         body)
     inner_status = totals_row.group(2).upper() if totals_row else ""
 
+    # 6. "Silent" Journal Import failure: launch_journal_import scans
+    #    GL_INTERFACE.group_id and finds nothing. Oracle reports SUCCEEDED at
+    #    the ESS level even though no rows were posted. Catch this explicitly.
+    zero_groups = re.search(r"Total:\s*0\s+group\s+id\(s\)", body, re.IGNORECASE)
+    if zero_groups:
+        detail.append("launch_journal_import: Total: 0 group id(s). "
+                      "Rows loaded into GL_INTERFACE did not match the JI "
+                      "group_id parameter — nothing was posted.")
+
+    # 7. SQL*Loader loaded 0 rows (file format or all-rows-rejected)
+    zero_loaded = re.search(
+        r"Table\s+\w+\s*:\s*\n\s*0\s+Rows successfully loaded", body)
+    if zero_loaded:
+        detail.append("SQL*Loader: 0 Rows successfully loaded.")
+
     has_errors  = bool(sql_errors or invalid_acct or n_rejected > 0
-                       or inner_status == "ERROR" or err_codes)
+                       or inner_status == "ERROR" or err_codes
+                       or zero_groups or zero_loaded)
     has_warnings = inner_status == "WARNING" and not has_errors
 
     parts = []
     if err_codes:    parts.append(f"JI error codes: {', '.join(err_codes)}")
     if n_rejected:   parts.append(f"SQL*Loader rejected {n_rejected} rows")
     if invalid_acct: parts.append(f"{len(invalid_acct)} invalid account problems")
+    if zero_groups:  parts.append("Journal Import found 0 matching group_id rows")
+    if zero_loaded:  parts.append("SQL*Loader loaded 0 rows")
     if inner_status: parts.append(f"JI status: {inner_status}")
     summary = "; ".join(parts) or ("Errors found in log." if has_errors else "No errors detected.")
 

@@ -711,10 +711,51 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     except Exception as _e:
         logger.warning("Could not extract GROUP_ID from pre-built ZIP CSV: %s", _e)
     if not group_id:
-        # Fallback: derive from request_id (CSV had no group_id at all)
+        # CSV has no group_id — generate one AND rewrite the CSV so SQL*Loader
+        # stores rows with the same id Journal Import will scan for. Without
+        # this rewrite the loader would store rows with empty group_id while
+        # we pass the new id as the JI parameter → "Total: 0 group id(s)".
         group_id = str(abs(hash(request_id)) % 999999999)
-        append_log(request_id, "INFO",
-                   f"No GROUP_ID in CSV — generated {group_id}")
+        try:
+            import zipfile as _zfw, io as _iow, csv as _csvw, tempfile as _tmpw, os as _osw
+            new_zip = zip_path.with_suffix(".gidpatch.zip")
+            with _zfw.ZipFile(zip_path, "r") as _zin, \
+                 _zfw.ZipFile(new_zip, "w", _zfw.ZIP_DEFLATED) as _zout:
+                for item in _zin.infolist():
+                    data = _zin.read(item.filename)
+                    if item.filename.lower().endswith(".csv") and not item.filename.startswith("__"):
+                        txt = data.decode("utf-8", errors="replace")
+                        rows = list(_csvw.reader(_iow.StringIO(txt)))
+                        for r in rows:
+                            # Only patch full-width data rows; skip short/empty
+                            if len(r) > 66:
+                                while len(r) < 67:
+                                    r.append("")
+                                r[66] = group_id
+                        buf = _iow.StringIO()
+                        _csvw.writer(buf, lineterminator="\n").writerows(rows)
+                        _zout.writestr(item.filename, buf.getvalue().encode("utf-8"))
+                    else:
+                        _zout.writestr(item.filename, data)
+            _osw.replace(new_zip, zip_path)
+            append_log(request_id, "INFO",
+                       f"No GROUP_ID in CSV — generated {group_id} and patched ZIP")
+            # Refresh stored ZIP/CSV in MongoDB so audit reflects what we sent
+            try:
+                zb = zip_path.read_bytes()
+                store_generated_file(request_id, "fbdi_zip", "GlInterface.zip", zb)
+                with _zfw.ZipFile(_iow.BytesIO(zb)) as _zr:
+                    cn = next((n for n in _zr.namelist()
+                               if n.lower().endswith(".csv") and not n.startswith("__")), None)
+                    if cn:
+                        store_generated_file(request_id, "fbdi_csv",
+                                             "GlInterface.csv", _zr.read(cn))
+            except Exception as _se:
+                logger.warning("Could not re-store patched ZIP/CSV: %s", _se)
+        except Exception as _e:
+            logger.warning("Could not patch GROUP_ID into ZIP: %s — submitting as-is", _e)
+            append_log(request_id, "WARNING",
+                       f"No GROUP_ID in CSV and could not patch ZIP: {_e}")
     else:
         append_log(request_id, "INFO",
                    f"Reusing GROUP_ID {group_id} from pre-built CSV (col 67)")
@@ -754,6 +795,8 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
             claim_ji_request(str(j["request_id"]), request_id, j.get("name", ""))
 
         # Download + store ESS logs (same code path as the full pipeline)
+        direct_inner_failed = False
+        direct_log_summary = ""
         try:
             logs = download_ess_logs(cfg, eid, group_id=group_id, ji_jobs=ji_jobs)
             if logs.get("zip_bytes"):
@@ -783,17 +826,37 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
                     proc_name = rid_to_name.get(real_rid) or rid_to_name.get(download_rid) or "ess"
                     new_name = f"{short_id}_{proc_name}_{real_rid or download_rid}.log"
                     store_log_file(request_id, new_name, body_bytes)
+            # Inspect log content for hidden failures (e.g. SQL*Loader OK but
+            # Journal Import "Total: 0 group id(s)" → ESS shows SUCCEEDED but
+            # nothing was actually posted). Treat as failure.
+            try:
+                analysis = analyze_ess_logs(logs)
+                if analysis.get("has_errors"):
+                    direct_inner_failed = True
+                    direct_log_summary = (
+                        f"{analysis['summary']}\n\n"
+                        + "\n".join(analysis.get("detail_lines", [])[:10])
+                    )
+                    _db_update(request_id, stop_reason=direct_log_summary)
+            except Exception as _ae:
+                logger.warning("Could not analyze ESS logs in direct_submit: %s", _ae)
         except Exception as e:
             logger.warning("Could not download ESS log zip in direct_submit: %s", e)
 
-    if eid in ("-1", "QUEUED", "") or final_status in ("SUCCEEDED", "WARNING", "QUEUED"):
-        if eid == "-1":
-            _db_update(request_id, status="FAILED", current_stage="SUBMIT_REJECTED",
-                       stop_reason="Oracle returned ReqstId=-1. Check the ZIP format, ledger name, and period in Oracle Fusion.")
-            _send_failure(request_id, "Oracle returned ReqstId=-1. The ZIP was rejected — verify the ledger and period are correct in Oracle Fusion.")
-        else:
-            _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
-            _send_success(request_id)
+    ess_ok = final_status in ("SUCCEEDED", "WARNING", "QUEUED")
+    if eid == "-1":
+        _db_update(request_id, status="FAILED", current_stage="SUBMIT_REJECTED",
+                   stop_reason="Oracle returned ReqstId=-1. Check the ZIP format, ledger name, and period in Oracle Fusion.")
+        _send_failure(request_id, "Oracle returned ReqstId=-1. The ZIP was rejected — verify the ledger and period are correct in Oracle Fusion.")
+    elif ess_ok and not direct_inner_failed:
+        _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
+        _send_success(request_id)
+    elif ess_ok and direct_inner_failed:
+        # ESS said SUCCEEDED but the JI/loader logs reveal no rows were posted.
+        _db_update(request_id, status="FAILED", current_stage="IMPORT_ERRORS",
+                   stop_reason=f"Oracle reported SUCCEEDED but no rows were posted. {direct_log_summary}")
+        _send_failure(request_id,
+                      f"Oracle Fusion accepted the file but Journal Import didn't post any rows.\n\n{direct_log_summary}")
     else:
         _db_update(request_id, status="FAILED", current_stage="ESS_FAILED",
                    stop_reason=f"ESS job ended with status: {final_status}")
