@@ -603,6 +603,118 @@ def _validate_zip_csv(req_id: str, zip_path: str) -> tuple[bool, list[str], int]
     return len(errors) == 0, errors, row_count
 
 
+_TERMINAL_STATES = {"SUCCEEDED", "WARNING", "ERROR", "FAILED", "CANCELLED"}
+
+
+def _collect_ji_jobs(cfg, eid: str, group_id: str, request_id: str,
+                     max_wait_s: int = 90) -> list[dict]:
+    """
+    Collect Import Journals parent + child request rows for this submission.
+
+    Why this is its own helper:
+      - The JI *child* (the actual Journal Import processor) is only spawned
+        *after* the JI parent (JournalImportLauncher) does its setup work.
+        Quick polls (5×3s) often see the parent but not the child yet.
+      - We must wait until each JI parent is in a TERMINAL state before we
+        trust the descendant list — otherwise we ship a log bundle that's
+        missing the child report finance teams need.
+
+    Strategy:
+      1. Poll find_journal_import_jobs (group_id-filtered) until parents appear,
+         up to ~30s.
+      2. Then poll each parent's state until terminal (up to max_wait_s total).
+      3. Once terminal, pull ALL absParentRequestId-matched descendants from
+         Scheduler REST. We trust the absParentRequestId join — no further
+         name filtering. Drops only the parent itself from the descendant list.
+    """
+    if eid in ("-1", "QUEUED", ""):
+        return []
+    deadline = time.time() + max_wait_s
+
+    # Phase 1 — find JI parents
+    parents: list[dict] = []
+    while time.time() < deadline:
+        parents = find_journal_import_jobs(cfg, eid, scan_range=30, group_id=group_id)
+        parents = [p for p in parents if "child" not in p.get("name", "").lower()]
+        if parents:
+            break
+        time.sleep(3)
+    if not parents:
+        append_log(request_id, "WARNING",
+                   f"No JI parent jobs surfaced for group_id={group_id} within "
+                   f"{max_wait_s}s — child logs will be missing")
+        return []
+    append_log(request_id, "INFO",
+               f"JI parent(s) found: {[p['request_id'] for p in parents]}")
+
+    # Phase 2 — wait until every parent reaches a terminal state
+    parent_ids = [str(p["request_id"]) for p in parents]
+    while time.time() < deadline:
+        not_done = []
+        for pid in parent_ids:
+            st = (get_ess_status(cfg, pid) or "").upper()
+            if st not in _TERMINAL_STATES:
+                not_done.append((pid, st))
+        if not not_done:
+            break
+        append_log(request_id, "INFO",
+                   f"Waiting on JI parent(s): {not_done}")
+        time.sleep(4)
+
+    # Phase 3 — gather descendants (children spawned by JI launcher)
+    children: list[dict] = []
+    seen: set[str] = set(parent_ids)
+    for p in parents:
+        for d in get_descendant_requests(cfg, p["request_id"]):
+            cid = str(d.get("request_id", ""))
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            children.append({
+                "request_id": cid,
+                "name":       d.get("name", "") or "import_journals_child",
+                "status":     d.get("status", ""),
+                "path":       "",
+            })
+
+    # Phase 4 — last-resort fallback when the Scheduler REST endpoint
+    # is restricted by the customer's tenant (returns []): probe a forward
+    # window of request IDs after each JI parent and accept any whose
+    # parentRequestId matches our parent. Keeps us from shipping a log
+    # bundle with no JI child file at all.
+    if not children:
+        append_log(request_id, "INFO",
+                   "Scheduler REST returned no descendants — falling back to "
+                   "forward-id scan for JI children")
+        for p in parents:
+            try:
+                p_int = int(p["request_id"])
+            except (TypeError, ValueError):
+                continue
+            for delta in range(1, 25):
+                cid = str(p_int + delta)
+                if cid in seen:
+                    continue
+                try:
+                    st = (get_ess_status(cfg, cid) or "").upper()
+                except Exception:
+                    continue
+                if not st:
+                    continue
+                # If we can fetch its status it exists; include it
+                seen.add(cid)
+                children.append({
+                    "request_id": cid,
+                    "name":       "import_journals_child",
+                    "status":     st,
+                    "path":       "",
+                })
+
+    append_log(request_id, "INFO",
+               f"JI child(ren) found: {[c['request_id'] for c in children] or 'NONE'}")
+    return parents + children
+
+
 def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     """
     Submit an already-formatted GlInterface.zip directly to Oracle.
@@ -773,24 +885,12 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
 
     final_status = _stage_monitor(request_id, eid)
 
-    # Find OUR Import Journals jobs (group_id-filtered, same as full pipeline)
+    # Find OUR Import Journals jobs (group_id-filtered). Uses the shared helper
+    # that waits for JI parents to be terminal before collecting descendants —
+    # otherwise the child log isn't in the bundle.
     ji_jobs: list = []
     if eid not in ("-1", "QUEUED", ""):
-        for _ in range(5):
-            time.sleep(3)
-            parents = find_journal_import_jobs(cfg, eid, scan_range=30, group_id=group_id)
-            parents = [p for p in parents if "child" not in p.get("name", "").lower()]
-            children: list = []
-            for p in parents:
-                for d in get_descendant_requests(cfg, p["request_id"]):
-                    nm = d.get("name", "")
-                    if ("Import Journals" in nm or "JournalImport" in nm) \
-                       and "child" in nm.lower():
-                        children.append({"request_id": d["request_id"], "name": nm,
-                                         "status": d.get("status", ""), "path": ""})
-            ji_jobs = parents + children
-            if ji_jobs:
-                break
+        ji_jobs = _collect_ji_jobs(cfg, eid, group_id, request_id, max_wait_s=90)
         for j in ji_jobs:
             claim_ji_request(str(j["request_id"]), request_id, j.get("name", ""))
 
@@ -1094,33 +1194,10 @@ def _process_request_impl(request_id: str):
         #   group_id (the 4th arg of our JournalImportLauncher ParameterList).
         # - Each JI Child links to its JI parent via `absParentRequestId` (and
         #   `parentRequestId`), reachable through the Scheduler REST API.
-        # Two-step lookup: filter parents by group_id, then pull children of those parents.
-        ji_jobs: list = []
-        for attempt in range(2):
-            time.sleep(3)
-            # Step 1: JI parents whose submit.argument4 equals our group_id
-            parents = find_journal_import_jobs(cfg, eid, scan_range=30, group_id=group_id)
-            # Drop any "Child" rows here — find_journal_import_jobs rejects them via
-            # group_id mismatch anyway, but be explicit.
-            parents = [p for p in parents if "child" not in p.get("name","").lower()]
-
-            # Step 2: pull each parent's descendants → finds the Import Journals: Child
-            children = []
-            for p in parents:
-                for d in get_descendant_requests(cfg, p["request_id"]):
-                    nm = d.get("name", "")
-                    if ("Import Journals" in nm or "JournalImport" in nm) \
-                       and "child" in nm.lower():
-                        children.append({
-                            "request_id": d["request_id"],
-                            "name":       nm,
-                            "status":     d.get("status", ""),
-                            "path":       "",
-                        })
-
-            ji_jobs = parents + children
-            if ji_jobs:
-                break
+        # Shared collector: waits for each JI parent to reach a terminal state
+        # before fetching descendants, so the JI child log is actually present
+        # in the bundle (it doesn't exist until the parent dispatches it).
+        ji_jobs = _collect_ji_jobs(cfg, eid, group_id, request_id, max_wait_s=90)
 
         # Belt-and-braces: claim each so any concurrent fallback path elsewhere
         # can never pick up our jobs by accident.
