@@ -101,7 +101,7 @@ def fetch_unprocessed_messages() -> list[dict]:
         return []
     user, pwd = c
     cfg = get_settings()
-    subject_kw = (cfg.gmail_subject_filter or "journal upload").strip()
+    allowed_sender = (getattr(cfg, "gmail_allowed_sender", "") or "").strip()
 
     out = []
     try:
@@ -111,17 +111,22 @@ def fetch_unprocessed_messages() -> list[dict]:
             imap.login(user, pwd)
             imap.select("INBOX")
 
-            # SEARCH: case-insensitive subject + no FBDI_PROCESSED Gmail label
-            # Use Gmail's X-GM-RAW for native search query support
-            search_q = f'subject:"{subject_kw}" has:attachment -label:{PROCESSED_LABEL}'
+            # SEARCH: filter by sender address (any subject), exclude messages
+            # already labelled as processed. If no sender is configured, fall
+            # back to "anything with attachments not yet processed" — this
+            # keeps polling functional out of the box.
+            if allowed_sender:
+                search_q = f'from:{allowed_sender} has:attachment -label:{PROCESSED_LABEL}'
+            else:
+                search_q = f'has:attachment -label:{PROCESSED_LABEL}'
             typ, data = imap.search(None, "X-GM-RAW", f'"{search_q}"')
             if typ != "OK":
                 return []
             ids = data[0].split()
             if not ids:
                 return []
-            logger.info("IMAP: found %d unprocessed email(s) matching '%s'",
-                        len(ids), subject_kw)
+            logger.info("IMAP: found %d unprocessed email(s) from '%s'",
+                        len(ids), allowed_sender or "any sender")
 
             for mid in ids:
                 typ, msg_data = imap.fetch(mid, "(RFC822)")

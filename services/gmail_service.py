@@ -137,7 +137,11 @@ def _get_or_create_label(service, name: str) -> str:
 
 def fetch_unprocessed_emails(service) -> list[dict]:
     cfg = get_settings()
-    q = f'subject:"{cfg.gmail_subject_filter}" has:attachment -label:FBDI_PROCESSED'
+    allowed_sender = (getattr(cfg, "gmail_allowed_sender", "") or "").strip()
+    if allowed_sender:
+        q = f'from:{allowed_sender} has:attachment -label:FBDI_PROCESSED'
+    else:
+        q = 'has:attachment -label:FBDI_PROCESSED'
     result = service.users().messages().list(userId="me", q=q).execute()
     return result.get("messages", [])
 

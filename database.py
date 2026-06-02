@@ -357,7 +357,10 @@ _DEFAULT_SETTINGS = {
     "gmail_credentials_file":  "config/gmail_credentials.json",
     "gmail_token_file":        "config/gmail_token.json",
     "gmail_poll_seconds":      60,
-    "gmail_subject_filter":    "journal upload",
+    # Polling now filters by SENDER (any email from this address is picked up,
+    # regardless of subject). Leave blank to accept any sender. The old
+    # `gmail_subject_filter` field is ignored if still present in the doc.
+    "gmail_allowed_sender":    "",
     # App Password mode (no OAuth) — set these via /settings
     "gmail_user":              "",
     "gmail_app_password":      "",
