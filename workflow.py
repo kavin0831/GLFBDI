@@ -674,6 +674,7 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
         return
 
     # Validate the ledger against Oracle's REST API
+    cfg = get_settings()
     resolved_ldr = lookup_ledger(cfg, name=direct_ledger_name)
     if not resolved_ldr:
         msg = f"Ledger Name '{direct_ledger_name}' in the ZIP is not valid in Oracle"
@@ -697,7 +698,6 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
     if eid is None:
         return
 
-    cfg = get_settings()
     # Pull the ledger name we resolved before submission from the DB
     with SessionLocal() as _db:
         _req = _db.get(JournalRequest, request_id)
