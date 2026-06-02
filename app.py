@@ -122,7 +122,9 @@ def _poll_gmail_once():
                 try:
                     for att in msg["attachments"]:
                         r_id = str(uuid.uuid4())
-                        store_uploaded_file(r_id, att["file_name"], att["file_bytes"])
+                        if not _store_and_verify_upload(r_id, att["file_name"],
+                                                       att["file_bytes"], "IMAP"):
+                            continue  # already logged inside helper
                         _create_and_process(r_id, msg["message_id"], msg["sender"],
                                             msg["subject"], att["file_name"],
                                             att["file_type"], att["file_size_bytes"], cfg)
@@ -153,7 +155,9 @@ def _poll_gmail_once():
                 continue
             for att in files:
                 r_id = str(uuid.uuid4())
-                store_uploaded_file(r_id, att["file_name"], att["file_bytes"])
+                if not _store_and_verify_upload(r_id, att["file_name"],
+                                               att["file_bytes"], "Gmail-OAuth"):
+                    continue
                 _create_and_process(r_id, msg["id"], att["sender"], att["subject"],
                                     att["file_name"], att["file_type"],
                                     att["file_size_bytes"], cfg)
@@ -162,6 +166,43 @@ def _poll_gmail_once():
             logger.error("Gmail processing failed for %s: %s", msg["id"], e)
             try: mark_failed(service, msg["id"])
             except Exception: pass
+
+
+def _store_and_verify_upload(req_id: str, filename: str, content,
+                             source_label: str) -> bool:
+    """Store an emailed attachment in MongoDB and verify it's actually
+    retrievable before the workflow kicks off. Returns False (and skips
+    the request) when storage silently fails — previously this could
+    happen with Fernet encryption errors and leave the Downloads sidebar
+    empty for Gmail-polled requests."""
+    try:
+        if isinstance(content, str):
+            content = content.encode("utf-8", errors="replace")
+        if not isinstance(content, (bytes, bytearray)):
+            logger.error("%s upload skipped — attachment %s is not bytes (%s)",
+                         source_label, filename, type(content).__name__)
+            return False
+        if not content:
+            logger.error("%s upload skipped — attachment %s is empty",
+                         source_label, filename)
+            return False
+        store_uploaded_file(req_id, filename, content)
+        # Verify the round trip — if encryption or upsert failed silently,
+        # this returns None and we abandon the request rather than create
+        # an orphaned MongoDB row with no source file.
+        check = get_uploaded_file(req_id)
+        if check is None or len(check) != len(content):
+            logger.error("%s upload verification failed for %s (req=%s) — "
+                         "storage call did not persist the bytes",
+                         source_label, filename, req_id)
+            return False
+        logger.info("%s upload stored & verified: %s -> req=%s (%d bytes)",
+                    source_label, filename, req_id, len(content))
+        return True
+    except Exception as e:
+        logger.error("%s upload error for %s (req=%s): %s",
+                     source_label, filename, req_id, e)
+        return False
 
 
 def _create_and_process(req_id, email_id, sender, subject, file_name,
@@ -707,6 +748,7 @@ async def download_file(req_id: str, ftype: str):
 def _all_files_for_request(req_id: str) -> list[dict]:
     """List every file (original upload + all generated kinds) for a request."""
     out: list[dict] = []
+    have_original = False
     try:
         up_doc = _mdb()["uploaded_files"].find_one({"_id": req_id})
         if up_doc:
@@ -716,8 +758,28 @@ def _all_files_for_request(req_id: str) -> list[dict]:
                 "size_bytes":  up_doc.get("size_bytes", 0),
                 "uploaded_at": str(up_doc.get("stored_at", "")),
             })
+            have_original = True
     except Exception:
         pass
+
+    # Fallback: when uploaded_files doc is missing (e.g. silent encrypt
+    # failure during Gmail polling) but the JournalRequest still records
+    # a file_name, surface it so the Downloads card and download endpoint
+    # can serve it. This keeps Gmail-sourced failed requests recoverable.
+    if not have_original:
+        try:
+            with SessionLocal() as db:
+                req = db.get(JournalRequest, req_id)
+                if req and (req.file_name or req.file_path):
+                    out.append({
+                        "kind":        "original",
+                        "filename":    req.file_name or req.file_path or "uploaded",
+                        "size_bytes":  int(getattr(req, "file_size_bytes", 0) or 0),
+                        "uploaded_at": str(getattr(req, "created_at", "") or ""),
+                    })
+        except Exception:
+            pass
+
     try:
         gen_doc = _mdb()["generated_files"].find_one({"_id": req_id})
         if gen_doc:
@@ -841,15 +903,42 @@ def _parse_request_source_to_table(req_id: str):
         except Exception: pass
 
     headers = list(DATA_COLS)
-    # Build rows aligned to DATA_COLS; pull existing values if columns match
+
+    # Map source columns → FBDI canonical names. Without this, business CSVs
+    # (with headers like "date" / "company" / "cost_center") show empty cells
+    # because rec.get("*Effective Date of Transaction") never matches.
+    src_to_fbdi: dict[str, str] = {}
+    try:
+        # If source already uses FBDI canonical headers, identity-map them.
+        for c in cols:
+            if c in headers:
+                src_to_fbdi[c] = c
+        # ML-map any remaining columns through the same mapper the workflow uses.
+        unmapped = [c for c in cols if c not in src_to_fbdi]
+        if unmapped:
+            from services.ml_mapper import map_all_columns, load_history_boost
+            ml_results = map_all_columns(unmapped, history_boost=load_history_boost())
+            CONF = 0.45  # match workflow's threshold; lower than this = no mapping
+            for r in ml_results:
+                if r.get("target_field") and float(r.get("confidence", 0)) >= CONF:
+                    src_to_fbdi[r["source_field"]] = r["target_field"]
+    except Exception as _e:
+        logger.warning("Edit: ML mapping failed for %s, showing raw cells: %s",
+                       req_id, _e)
+
+    # Invert: for each FBDI canonical header, which source column feeds it?
+    fbdi_to_src = {fbdi: src for src, fbdi in src_to_fbdi.items()}
+
     rows: list[list[str]] = []
     for rec in records:
         row = []
         for h in headers:
+            # 1) Source column already named canonically (e.g. FBDI re-edits)
             val = rec.get(h, "")
-            if val is None:
-                val = ""
-            row.append(str(val))
+            # 2) Otherwise, look up the source column the ML mapper assigned
+            if val in (None, "") and h in fbdi_to_src:
+                val = rec.get(fbdi_to_src[h], "")
+            row.append("" if val is None else str(val))
         rows.append(row)
     return headers, rows, version
 
