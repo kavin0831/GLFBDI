@@ -1112,7 +1112,7 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
                     direct_inner_failed = True
                     direct_log_summary = (
                         f"{analysis['summary']}\n\n"
-                        + "\n".join(analysis.get("detail_lines", [])[:10])
+                        + "\n".join(analysis.get("detail_lines", [])[:25])
                     )
                     _db_update(request_id, stop_reason=direct_log_summary)
                     # Silent purge of GL_INTERFACE for our group_id so rejected rows
@@ -1558,7 +1558,7 @@ def _process_request_impl(request_id: str):
                 analysis = analyze_ess_logs(logs)
                 if analysis["has_errors"]:
                     inner_failed = True
-                    detail = "\n".join(analysis["detail_lines"][:10])
+                    detail = "\n".join(analysis["detail_lines"][:25])
                     log_summary = f"{analysis['summary']}\n\n{detail}"
                     _db_update(request_id, stop_reason=log_summary)
         except Exception as e:

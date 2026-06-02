@@ -743,10 +743,39 @@ def analyze_ess_logs(logs: dict) -> dict:
 
     # 2. JI "Error Lines" section: error code followed by Source name and amounts/accounts
     #    e.g. "EF04                           Manual                         2026-05-16  USD ..."
-    real_errors = re.findall(
-        r"^(E[A-Z]{1,3}\d{1,3})\s+(Manual|Spreadsheet|Payables|Receivables|\w+)\s+\d{4}",
-        body, flags=re.MULTILINE)
+    # Capture the FULL line so the UI can show the offending row, not just the code.
+    err_line_matches = list(re.finditer(
+        r"^(E[A-Z]{1,3}\d{1,3})\s+(Manual|Spreadsheet|Payables|Receivables|\w+)\s+\d{4}[^\n]*",
+        body, flags=re.MULTILINE))
+    real_errors = [(m.group(1), m.group(2)) for m in err_line_matches]
     err_codes = sorted(set(c for c, _src in real_errors))
+    # Append each unique error line (cap to keep stop_reason readable)
+    seen_lines: set[str] = set()
+    for m in err_line_matches:
+        line = m.group(0).strip()
+        # Collapse runs of spaces so the formatted log isn't jagged
+        compact = re.sub(r"\s{2,}", "  ", line)
+        if compact not in seen_lines:
+            seen_lines.add(compact)
+            detail.append(compact)
+        if len(seen_lines) >= 20:
+            break
+
+    # 2b. Error Key legend descriptions for ONLY the codes that actually
+    #     appeared above. Oracle's JI logs document each code in a section
+    #     that looks like:
+    #         ====== Error Key ======
+    #         EF04  Account combination flagged 'detail posting not allowed'.
+    #         EF05  ...
+    legend_text = text[legend_match.start():] if legend_match else ""
+    if legend_text and err_codes:
+        for code in err_codes:
+            # Each legend entry: code at line start, then description until blank line / next code
+            m = re.search(rf"^{re.escape(code)}\s+(.+?)(?=\n\s*\n|\n\s*E[A-Z]{{1,3}}\d{{1,3}}\s|\Z)",
+                          legend_text, flags=re.MULTILINE | re.DOTALL)
+            if m:
+                desc = re.sub(r"\s+", " ", m.group(1)).strip()
+                detail.append(f"{code}: {desc[:240]}")
 
     # 3. Invalid account problem descriptions
     invalid_acct = re.findall(
