@@ -128,11 +128,9 @@
     rowCount.textContent = tbody.querySelectorAll('tr').length;
   }
 
-  // Fill-column row: when a user types a value in one of these inputs and
-  // moves focus away (blur) or hits Enter/Tab, copy that value into every
-  // row's cell in the same column.
+  // Fill-column row: type a value, it propagates to EVERY row in that column
+  // live (every keystroke) plus once more on blur / Enter / Tab as a safety net.
   function applyFillToColumn(colIdx, value) {
-    if (value === '' || value == null) return 0;
     let filled = 0;
     tbody.querySelectorAll('tr').forEach(tr => {
       const cells = tr.querySelectorAll('td:not(.col-check) input[type=text]');
@@ -143,22 +141,39 @@
     });
     return filled;
   }
-  document.querySelectorAll('input.fill-input').forEach(inp => {
-    const apply = function() {
-      const colIdx = parseInt(inp.dataset.col, 10);
-      const v = inp.value;
-      if (v === '' || isNaN(colIdx)) return;
-      const n = applyFillToColumn(colIdx, v);
-      statusEl.textContent = 'Filled "' + v + '" into ' + n + ' row(s) in column ' + (colIdx+1) + '.';
-      statusEl.className = 'edit-status ok';
-    };
-    inp.addEventListener('blur', apply);
-    inp.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        apply();
-      }
+  function wireFillInputs() {
+    const fillInputs = document.querySelectorAll('input.fill-input');
+    if (!fillInputs.length) {
+      console.warn('Edit: no .fill-input elements found — fill-column row missing');
+      return;
+    }
+    fillInputs.forEach(inp => {
+      const apply = function() {
+        const colIdx = parseInt(inp.dataset.col, 10);
+        if (isNaN(colIdx)) return;
+        const v = inp.value;
+        const n = applyFillToColumn(colIdx, v);
+        if (v !== '') {
+          statusEl.textContent = 'Filled "' + v + '" into ' + n + ' row(s) in column ' + (colIdx + 1) + '.';
+          statusEl.className = 'edit-status ok';
+        }
+      };
+      // Realtime: fires on every keystroke / paste / cut
+      inp.addEventListener('input', apply);
+      // Safety nets in case 'input' is suppressed by something
+      inp.addEventListener('change', apply);
+      inp.addEventListener('blur',   apply);
+      inp.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === 'Tab') { apply(); }
+      });
     });
-  });
+    console.log('Edit: fill-column row wired for', fillInputs.length, 'columns');
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wireFillInputs);
+  } else {
+    wireFillInputs();
+  }
 
   // Add row
   document.getElementById('btn-add').addEventListener('click', function() {

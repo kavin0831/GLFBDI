@@ -26,7 +26,10 @@ def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, 
     """
     Resolve an attachment to (filename, bytes), trying disk first then MongoDB.
     `kind` matches what was passed to store_generated_file (fbdi_csv, fbdi_zip,
-    bad_csv, ess_log).  Returns None if neither location has the file.
+    bad_csv, ess_log). Generated files are now version-tagged (e.g. `bad_csv_v0`,
+    `bad_csv_v1`) — when the exact kind isn't found, fall back to the
+    HIGHEST-versioned `{kind}_v*` so emails always pick up the latest artifact.
+    Returns None if neither location has the file.
     """
     if virtual_path and Path(virtual_path).is_file():
         p = Path(virtual_path)
@@ -34,10 +37,33 @@ def _attachment(req_id: str, kind: str, virtual_path: str | None) -> tuple[str, 
             return p.name, p.read_bytes()
         except Exception:
             pass
+    # 1) Exact kind hit
     result = get_generated_file(req_id, kind)
     if result:
         bytes_data, filename = result
         return filename, bytes_data
+    # 2) Versioned fallback — scan generated_files for `{kind}_v*` and pick highest
+    try:
+        from database import _mdb as _db_mdb
+        doc = _db_mdb()["generated_files"].find_one({"_id": req_id})
+        if doc:
+            candidates: list[tuple[int, str]] = []
+            for k in (doc.get("files", {}) or {}).keys():
+                if k.startswith(kind + "_v"):
+                    try:
+                        n = int(k.rsplit("_v", 1)[1])
+                        candidates.append((n, k))
+                    except ValueError:
+                        pass
+            if candidates:
+                candidates.sort(reverse=True)
+                _, latest_kind = candidates[0]
+                result = get_generated_file(req_id, latest_kind)
+                if result:
+                    bytes_data, filename = result
+                    return filename, bytes_data
+    except Exception:
+        pass
     return None
 from services.fusion_service import (
     analyze_ess_logs, check_period_status, download_ess_logs,
