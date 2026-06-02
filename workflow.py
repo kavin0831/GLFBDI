@@ -690,8 +690,34 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
 
     _db_update(request_id, current_stage="DIRECT_SUBMIT")
 
-    # group_id: same hash-derived approach as the full pipeline so JI correlation works
-    group_id = str(abs(hash(request_id)) % 999999999)
+    # group_id: a pre-built FBDI ZIP already has GROUP_ID baked into column 67
+    # of the CSV (Oracle's positional layout). If we generate a *new* hash-derived
+    # group_id here and pass it to JI, SQL*Loader will load the rows with the
+    # CSV's group_id but Journal Import will scan for ours — finding 0 rows
+    # ("Total: 0 group id(s)"). Read the CSV's group_id and reuse it.
+    group_id = ""
+    try:
+        from utils.fbdi_generator import DATA_COLS as _DCOLS
+        import zipfile as _zf2, io as _io2, csv as _csv2
+        with _zf2.ZipFile(zip_path) as _zf:
+            _csv_name = next((n for n in _zf.namelist()
+                              if n.lower().endswith(".csv") and not n.startswith("__")), None)
+            if _csv_name:
+                _txt = _zf.read(_csv_name).decode("utf-8", errors="replace")
+                for _row in _csv2.reader(_io2.StringIO(_txt)):
+                    if len(_row) > 66 and _row[66].strip():
+                        group_id = _row[66].strip()
+                        break
+    except Exception as _e:
+        logger.warning("Could not extract GROUP_ID from pre-built ZIP CSV: %s", _e)
+    if not group_id:
+        # Fallback: derive from request_id (CSV had no group_id at all)
+        group_id = str(abs(hash(request_id)) % 999999999)
+        append_log(request_id, "INFO",
+                   f"No GROUP_ID in CSV — generated {group_id}")
+    else:
+        append_log(request_id, "INFO",
+                   f"Reusing GROUP_ID {group_id} from pre-built CSV (col 67)")
     _db_update(request_id, fusion_group_id=group_id)
     eid = _stage_submit(request_id, zip_path, group_id=group_id,
                         ledger_name=resolved_ldr["name"])
