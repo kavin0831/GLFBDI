@@ -1069,14 +1069,35 @@ def _process_request_impl(request_id: str):
 
     _data_id   = next(iter(_ids),   "")
     _data_name = next(iter(_names), "")
-    # No setting-level fallback — data file must supply at least one of ID / name
+
+    # Fallback to the Ledger Name typed in the upload form when the data file
+    # has neither *Ledger ID nor Ledger Name. We still validate it against
+    # Oracle REST below, so a typo here will still fail loudly — but legitimate
+    # data files (e.g. raw GL extracts without a ledger column) become usable.
     if not (_data_id or _data_name):
-        msg = "Data file is missing both *Ledger ID and Ledger Name"
-        _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
-                   error_message=msg, stop_reason=msg)
-        append_log(request_id, "ERROR", msg)
-        _send_failure(request_id, msg)
-        return
+        form_ledger = ""
+        try:
+            with SessionLocal() as _db:
+                _req = _db.get(JournalRequest, request_id)
+                form_ledger = (getattr(_req, "ledger_name", "") or "").strip() if _req else ""
+        except Exception:
+            form_ledger = ""
+        if form_ledger:
+            append_log(request_id, "INFO",
+                       f"Data file has no Ledger ID / Ledger Name — using the "
+                       f"Ledger Name '{form_ledger}' supplied in the upload form")
+            _data_name = form_ledger
+            # Stamp it onto every record so build_rows writes it into the FBDI
+            for r in records:
+                r["Ledger Name"] = form_ledger
+        else:
+            msg = ("Data file is missing both *Ledger ID and Ledger Name, and no "
+                   "Ledger Name was provided in the upload form")
+            _db_update(request_id, status="FAILED", current_stage="VALIDATION_FAILED",
+                       error_message=msg, stop_reason=msg)
+            append_log(request_id, "ERROR", msg)
+            _send_failure(request_id, msg)
+            return
 
     resolved = None
     if _data_id:
