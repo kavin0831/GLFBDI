@@ -81,5 +81,46 @@ def test_normalize_whitespace(fresh_db):
     records = [{"Segment1": "  1000  "}, {"Segment1": "  ABC"}]
     cols = ["Segment1"]
     out = _stage_normalize("test-req-ws", records, cols)
+    # "1000" already 4 digits, ABC ignored (non-numeric)
     assert out[0]["Segment1"] == "1000"
     assert out[1]["Segment1"] == "ABC"
+
+
+def test_normalize_segment_pads_short_to_column_max(fresh_db):
+    """User typed '0' but other rows have '121' / '500' → pad short values
+    to the column's max numeric width so Oracle COA accepts them."""
+    from workflow import _stage_normalize
+    records = [
+        {"Segment5": "0",   "Segment6": "000"},
+        {"Segment5": "121", "Segment6": "000"},
+        {"Segment5": "500", "Segment6": "0"},
+    ]
+    cols = ["Segment5", "Segment6"]
+    out = _stage_normalize("seg-pad-1", records, cols)
+    # Segment5 max width = 3 ('121','500') → pad '0' to '000'
+    assert out[0]["Segment5"] == "000"
+    assert out[1]["Segment5"] == "121"
+    assert out[2]["Segment5"] == "500"
+    # Segment6 all digits, max width = 3 → '0' stays '000'
+    assert out[0]["Segment6"] == "000"
+    assert out[2]["Segment6"] == "000"
+
+
+def test_normalize_segment_min_width_three(fresh_db):
+    """Single-digit-only column still pads to 3 (common COA width)."""
+    from workflow import _stage_normalize
+    records = [{"Segment4": "0"}, {"Segment4": "5"}]
+    cols = ["Segment4"]
+    out = _stage_normalize("seg-pad-2", records, cols)
+    assert out[0]["Segment4"] == "000"
+    assert out[1]["Segment4"] == "005"
+
+
+def test_normalize_segment_preserves_non_numeric(fresh_db):
+    """A column containing letters/dashes is left alone — not all COAs are numeric."""
+    from workflow import _stage_normalize
+    records = [{"Segment2": "AB"}, {"Segment2": "CD-1"}]
+    cols = ["Segment2"]
+    out = _stage_normalize("seg-pad-3", records, cols)
+    assert out[0]["Segment2"] == "AB"
+    assert out[1]["Segment2"] == "CD-1"

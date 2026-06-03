@@ -25,14 +25,21 @@
   .edit-tablewrap table { border-collapse:separate; border-spacing:0;
                           font-family: 'Consolas','Menlo','Courier New',monospace;
                           font-size:12px; }
-  .edit-tablewrap thead th { position:sticky; top:0; background:#f3f4f6;
-                             color:#374151; padding:6px 8px;
-                             border-bottom:1px solid #d1d5db;
-                             white-space:nowrap; z-index:2; font-weight:600;
-                             min-width:140px; }
+  /* Header rows are sticky in layers: fill-row pinned at top:0, the regular
+     column-name row sits just below it. The fill row appears FIRST in DOM
+     order so its z-index needs to win when the user scrolls down. */
+  .edit-tablewrap thead tr.fill-row th { position:sticky; top:0; z-index:4;
+                                          background:#fff7ed;
+                                          border-bottom:1px solid #fed7aa;
+                                          padding:6px 8px; min-width:140px;
+                                          white-space:nowrap; font-weight:600; }
+  .edit-tablewrap thead tr:not(.fill-row) th { position:sticky; top:36px;
+                                                z-index:3; background:#f3f4f6;
+                                                color:#374151; padding:6px 8px;
+                                                border-bottom:1px solid #d1d5db;
+                                                white-space:nowrap; font-weight:600;
+                                                min-width:140px; }
   .edit-tablewrap thead th.col-check { min-width:36px; }
-  .edit-tablewrap thead tr.fill-row th { background:#fff7ed; border-bottom:1px solid #fed7aa;
-                                          padding:4px 6px; top:32px; }
   .edit-tablewrap thead tr.fill-row input { width:100%; min-width:130px; padding:3px 6px;
                                              border:1px dashed #f59e0b; border-radius:3px;
                                              background:#fffbeb; font-family:inherit;

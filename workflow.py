@@ -237,13 +237,37 @@ def _stage_normalize(req_id: str, records: list[dict], cols: list[str]) -> list[
                 _log(col, orig, new_val)
                 row[col] = new_val
 
+    # Segment leading-zero auto-pad. Oracle COAs use fixed-width segment
+    # codes; '000' typed as '0' (or trimmed somewhere upstream) fails cross-
+    # validation as 'account isn't valid'. Detect each Segment* column's
+    # max numeric width across rows, then left-pad shorter digit-only values.
+    # Falls back to a minimum of 3 chars (most common COA width) so a column
+    # full of '0' alone gets padded to '000'.
+    seg_cols = [c for c in cols if c.lower().startswith("segment")]
+    for col in seg_cols:
+        widths: set[int] = set()
+        for r in records:
+            v = str(r.get(col, "")).strip()
+            if v and v.isdigit():
+                widths.add(len(v))
+        if not widths:
+            continue
+        target_w = max(max(widths), 3)
+        for r in records:
+            v = str(r.get(col, "")).strip()
+            if v and v.isdigit() and len(v) < target_w:
+                padded = v.zfill(target_w)
+                _log(col, v, padded)
+                r[col] = padded
+
     if log_count >= LOG_CAP:
         append_log(req_id, "INFO",
                    f"_stage_normalize: more corrections applied (log capped at {LOG_CAP})")
     append_log(req_id, "INFO",
                f"Normalization complete: {log_count} change(s) logged "
                f"(date_cols={len(date_cols)}, flag_cols={len(flag_cols)}, "
-               f"ccy_cols={len(ccy_cols)}, amt_cols={len(amount_cols)})")
+               f"ccy_cols={len(ccy_cols)}, amt_cols={len(amount_cols)}, "
+               f"seg_cols={len(seg_cols)})")
     return records
 
 
