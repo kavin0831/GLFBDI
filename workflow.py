@@ -244,6 +244,7 @@ def _stage_normalize(req_id: str, records: list[dict], cols: list[str]) -> list[
     # Falls back to a minimum of 3 chars (most common COA width) so a column
     # full of '0' alone gets padded to '000'.
     seg_cols = [c for c in cols if c.lower().startswith("segment")]
+    seg_pad_total = 0
     for col in seg_cols:
         widths: set[int] = set()
         for r in records:
@@ -253,12 +254,26 @@ def _stage_normalize(req_id: str, records: list[dict], cols: list[str]) -> list[
         if not widths:
             continue
         target_w = max(max(widths), 3)
+        col_padded = 0
         for r in records:
             v = str(r.get(col, "")).strip()
             if v and v.isdigit() and len(v) < target_w:
                 padded = v.zfill(target_w)
                 _log(col, v, padded)
                 r[col] = padded
+                col_padded += 1
+        if col_padded:
+            # Distinct summary line per column so segment auto-pad activity is
+            # obvious in process logs (in addition to per-value 'Normalized…'
+            # entries that share the cap with other normalize categories).
+            append_log(req_id, "INFO",
+                       f"Segment padding: {col} → width {target_w} "
+                       f"({col_padded} value(s) zero-padded)")
+            seg_pad_total += col_padded
+    if seg_pad_total:
+        append_log(req_id, "INFO",
+                   f"Segment auto-pad complete: {seg_pad_total} value(s) "
+                   f"across {len([c for c in seg_cols if c])} segment column(s)")
 
     if log_count >= LOG_CAP:
         append_log(req_id, "INFO",
@@ -1392,10 +1407,13 @@ def _process_request_impl(request_id: str):
                     pass
             if not iso:
                 iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            rate = get_conversion_rate(cfg, currency, functional_ccy, iso)
+            # Pass req_id so the REST call + every fallback step is logged
+            # into this request's process_logs (visible on the detail page).
+            rate = get_conversion_rate(cfg, currency, functional_ccy, iso,
+                                       req_id=request_id)
             meta["currency_conversion_rate"] = f"{rate:.6f}".rstrip("0").rstrip(".")
             append_log(request_id, "INFO",
-                       f"Currency conversion rate {currency}→{functional_ccy} "
+                       f"Currency conversion rate applied: {currency}→{functional_ccy} "
                        f"on {iso}: {meta['currency_conversion_rate']}")
         except Exception as _fxe:
             logger.warning("FX rate lookup failed: %s", _fxe)

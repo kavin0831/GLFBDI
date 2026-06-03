@@ -888,26 +888,46 @@ _FX_FALLBACK = {
 
 
 def get_conversion_rate(cfg, from_curr: str, to_curr: str, rate_date: str,
-                       rate_type: str = "Corporate") -> float:
+                       rate_type: str = "Corporate", req_id: str = "") -> float:
     """Return FX rate from_curr → to_curr on rate_date. Tries Oracle's Daily
     Rates REST API first; falls back to a hardcoded table on miss/error.
-    rate_date format: 'YYYY-MM-DD'."""
+    rate_date format: 'YYYY-MM-DD'.
+
+    When `req_id` is provided, every step (REST hit, REST miss + fallback,
+    inverse fallback, final default) is appended to that request's process
+    logs so users can see the path that was taken on the request detail page.
+    """
+    def _proc_log(level: str, msg: str):
+        if not req_id:
+            return
+        try:
+            from database import append_log
+            append_log(req_id, level, msg)
+        except Exception:
+            pass
+
     fc = (from_curr or "").strip().upper()
     tc = (to_curr or "").strip().upper()
     if not fc or not tc:
         return 1.0
     if fc == tc:
+        _proc_log("INFO", f"FX rate {fc}→{tc}: 1.0 (same currency, no REST call)")
         return 1.0
     key = (fc, tc, rate_date, rate_type)
     if key in _RATE_CACHE:
-        return _RATE_CACHE[key]
+        cached = _RATE_CACHE[key]
+        _proc_log("INFO", f"FX rate {fc}→{tc} on {rate_date}: {cached} (cache hit)")
+        return cached
 
     # 1. Try Oracle Daily Rates REST API
+    rest_endpoint = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/dailyRates"
+    _proc_log("INFO",
+              f"FX rate REST call: GET {rest_endpoint}?q=FromCurrency='{fc}';"
+              f"ToCurrency='{tc}';ConversionDate='{rate_date}';ConversionRateType='{rate_type}'")
     try:
-        url = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/dailyRates"
         q = (f"FromCurrency='{fc}';ToCurrency='{tc}';"
              f"ConversionDate='{rate_date}';ConversionRateType='{rate_type}'")
-        r = httpx.get(url, params={"q": q, "fields": "ConversionRate"},
+        r = httpx.get(rest_endpoint, params={"q": q, "fields": "ConversionRate"},
                       auth=_auth(cfg), timeout=15,
                       headers={"Accept": "application/json"})
         if r.status_code == 200:
@@ -921,11 +941,23 @@ def get_conversion_rate(cfg, from_curr: str, to_curr: str, rate_date: str,
                             _RATE_CACHE[key] = rate
                             logger.info("FX rate via Oracle REST: %s→%s on %s = %s",
                                         fc, tc, rate_date, rate)
+                            _proc_log("INFO",
+                                      f"FX rate {fc}→{tc} on {rate_date}: {rate} "
+                                      f"(Oracle Daily Rates REST)")
                             return rate
                     except (TypeError, ValueError):
                         pass
+            _proc_log("WARNING",
+                      f"FX rate REST returned no items for {fc}→{tc} on {rate_date} "
+                      f"— falling back to local table")
+        else:
+            _proc_log("WARNING",
+                      f"FX rate REST returned status {r.status_code} for {fc}→{tc} "
+                      f"— falling back to local table")
     except Exception as e:
         logger.debug("Oracle daily rates lookup failed for %s→%s: %s", fc, tc, e)
+        _proc_log("WARNING",
+                  f"FX rate REST call failed ({e}) — falling back to local table")
 
     # 2. Fallback table — direct
     if (fc, tc) in _FX_FALLBACK:
@@ -933,16 +965,23 @@ def get_conversion_rate(cfg, from_curr: str, to_curr: str, rate_date: str,
         _RATE_CACHE[key] = rate
         logger.warning("FX rate via fallback table: %s→%s = %s (REST unavailable)",
                        fc, tc, rate)
+        _proc_log("INFO",
+                  f"FX rate {fc}→{tc}: {rate} (hardcoded fallback table)")
         return rate
     # 3. Inverse
     if (tc, fc) in _FX_FALLBACK and _FX_FALLBACK[(tc, fc)]:
         rate = 1.0 / _FX_FALLBACK[(tc, fc)]
         _RATE_CACHE[key] = rate
         logger.warning("FX rate via inverse fallback: %s→%s = %.6f", fc, tc, rate)
+        _proc_log("INFO",
+                  f"FX rate {fc}→{tc}: {rate:.6f} (inverse of {tc}→{fc} fallback)")
         return rate
 
     # 4. Final fallback
     logger.warning("FX rate unknown for %s→%s — defaulting to 1.0", fc, tc)
+    _proc_log("WARNING",
+              f"FX rate unknown for {fc}→{tc} — defaulting to 1.0 "
+              f"(neither REST nor fallback table has this pair)")
     _RATE_CACHE[key] = 1.0
     return 1.0
 
