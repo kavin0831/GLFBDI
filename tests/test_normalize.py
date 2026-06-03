@@ -78,12 +78,12 @@ def test_normalize_currency_uppercase(fresh_db):
 
 def test_normalize_whitespace(fresh_db):
     from workflow import _stage_normalize
-    records = [{"Segment1": "  1000  "}, {"Segment1": "  ABC"}]
-    cols = ["Segment1"]
+    records = [{"Segment3": "  1000  "}, {"Segment3": "  ABC"}]
+    cols = ["Segment3"]
     out = _stage_normalize("test-req-ws", records, cols)
     # "1000" already 4 digits, ABC ignored (non-numeric)
-    assert out[0]["Segment1"] == "1000"
-    assert out[1]["Segment1"] == "ABC"
+    assert out[0]["Segment3"] == "1000"
+    assert out[1]["Segment3"] == "ABC"
 
 
 def test_normalize_segment_pads_short_to_column_max(fresh_db):
@@ -119,8 +119,33 @@ def test_normalize_segment_min_width_three(fresh_db):
 def test_normalize_segment_preserves_non_numeric(fresh_db):
     """A column containing letters/dashes is left alone — not all COAs are numeric."""
     from workflow import _stage_normalize
-    records = [{"Segment2": "AB"}, {"Segment2": "CD-1"}]
-    cols = ["Segment2"]
+    records = [{"Segment3": "AB"}, {"Segment3": "CD-1"}]
+    cols = ["Segment3"]
     out = _stage_normalize("seg-pad-3", records, cols)
-    assert out[0]["Segment2"] == "AB"
-    assert out[1]["Segment2"] == "CD-1"
+    assert out[0]["Segment3"] == "AB"
+    assert out[1]["Segment3"] == "CD-1"
+
+
+def test_normalize_segment_skips_segment1_and_segment2(fresh_db):
+    """Segment1 (Company) and Segment2 (Balancing) are typically 2-digit codes
+    in Oracle COAs — padding '10' → '010' there would corrupt valid data.
+    The auto-pad only applies from Segment3 onwards."""
+    from workflow import _stage_normalize
+    records = [
+        {"Segment1": "10", "Segment2": "1",  "Segment3": "0"},
+        {"Segment1": "10", "Segment2": "1",  "Segment3": "121"},
+        {"Segment1": "5",  "Segment2": "10", "Segment3": "500"},
+    ]
+    cols = ["Segment1", "Segment2", "Segment3"]
+    out = _stage_normalize("seg-pad-skip12", records, cols)
+    # Segment1 / Segment2 untouched — verbatim
+    assert out[0]["Segment1"] == "10"
+    assert out[1]["Segment1"] == "10"
+    assert out[2]["Segment1"] == "5"
+    assert out[0]["Segment2"] == "1"
+    assert out[1]["Segment2"] == "1"
+    assert out[2]["Segment2"] == "10"
+    # Segment3 still padded normally
+    assert out[0]["Segment3"] == "000"
+    assert out[1]["Segment3"] == "121"
+    assert out[2]["Segment3"] == "500"

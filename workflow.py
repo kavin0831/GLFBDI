@@ -243,7 +243,20 @@ def _stage_normalize(req_id: str, records: list[dict], cols: list[str]) -> list[
     # max numeric width across rows, then left-pad shorter digit-only values.
     # Falls back to a minimum of 3 chars (most common COA width) so a column
     # full of '0' alone gets padded to '000'.
-    seg_cols = [c for c in cols if c.lower().startswith("segment")]
+    # Skip Segment1 / Segment2 — those are Company / Balancing-segment values
+    # in most Oracle COAs and customers commonly use 2-digit codes there. The
+    # 3-char auto-pad would corrupt them (e.g. '10' → '010'). The 0 → 000
+    # auto-correct only kicks in from Segment3 onwards.
+    import re as _segre
+    def _is_padded_segment(name: str) -> bool:
+        m = _segre.match(r"(?i)^segment\s*(\d+)$", name.strip())
+        if not m:
+            return False
+        try:
+            return int(m.group(1)) >= 3
+        except ValueError:
+            return False
+    seg_cols = [c for c in cols if _is_padded_segment(c)]
     seg_pad_total = 0
     for col in seg_cols:
         widths: set[int] = set()
