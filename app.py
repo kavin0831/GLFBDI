@@ -929,17 +929,35 @@ def _parse_request_source_to_table(req_id: str):
         req = db.get(JournalRequest, req_id)
         if not req:
             return None, None, None
-        latest = getattr(req, "latest_edit_filename", "") or ""
         version = int(getattr(req, "version", 0) or 0)
 
+    # Always prefer the HIGHEST-versioned edit if one exists. This is more
+    # robust than trusting `latest_edit_filename` alone — a missed commit on
+    # that field used to send users back to the original upload. Falls back
+    # to original only if no edit version is present.
     source_bytes: bytes | None = None
     source_name = "uploaded.csv"
-    if latest:
-        result = get_generated_file(req_id, f"edit_source_{latest}")
-        if result is None:
-            result = get_generated_file(req_id, latest)
-        if result is not None:
-            source_bytes, source_name = result
+    try:
+        gen_doc = _mdb()["generated_files"].find_one({"_id": req_id})
+        edits: list[tuple[int, str]] = []
+        if gen_doc:
+            for kind in (gen_doc.get("files", {}) or {}).keys():
+                if kind.startswith("edited_csv_v"):
+                    try:
+                        n = int(kind.rsplit("_v", 1)[1])
+                        edits.append((n, kind))
+                    except ValueError:
+                        pass
+        if edits:
+            edits.sort(reverse=True)
+            highest_n, highest_kind = edits[0]
+            result = get_generated_file(req_id, highest_kind)
+            if result is not None:
+                source_bytes, source_name = result
+                version = highest_n
+    except Exception:
+        pass
+
     if source_bytes is None:
         source_bytes = get_uploaded_file(req_id)
         with SessionLocal() as db:

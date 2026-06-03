@@ -31,7 +31,7 @@ def test_rest_success_returns_rate():
         fusion_username = "u"
         fusion_password = "p"
 
-    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/dailyRates").mock(
+    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/currencyRates").mock(
         return_value=httpx.Response(200, json={"items": [{"ConversionRate": 83.5}]})
     )
     rate = get_conversion_rate(Cfg(), "USD", "INR", "2025-12-16")
@@ -48,7 +48,7 @@ def test_rest_404_falls_back_to_table():
         fusion_username = "u"
         fusion_password = "p"
 
-    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/dailyRates").mock(
+    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/currencyRates").mock(
         return_value=httpx.Response(404)
     )
     rate = get_conversion_rate(Cfg(), "USD", "INR", "2025-12-16")
@@ -65,7 +65,7 @@ def test_rest_empty_items_falls_back():
         fusion_username = "u"
         fusion_password = "p"
 
-    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/dailyRates").mock(
+    respx.get("https://fusion.example.com/fscmRestApi/resources/11.13.18.05/currencyRates").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
     rate = get_conversion_rate(Cfg(), "USD", "EUR", "2025-12-16")
@@ -83,7 +83,7 @@ def test_cache_hit_no_second_call():
         fusion_password = "p"
 
     route = respx.get(
-        "https://fusion.example.com/fscmRestApi/resources/11.13.18.05/dailyRates"
+        "https://fusion.example.com/fscmRestApi/resources/11.13.18.05/currencyRates"
     ).mock(return_value=httpx.Response(200, json={"items": [{"ConversionRate": 83.0}]}))
 
     r1 = get_conversion_rate(Cfg(), "USD", "INR", "2025-12-16")

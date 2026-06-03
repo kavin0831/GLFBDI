@@ -919,45 +919,73 @@ def get_conversion_rate(cfg, from_curr: str, to_curr: str, rate_date: str,
         _proc_log("INFO", f"FX rate {fc}→{tc} on {rate_date}: {cached} (cache hit)")
         return cached
 
-    # 1. Try Oracle Daily Rates REST API
-    rest_endpoint = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/dailyRates"
-    _proc_log("INFO",
-              f"FX rate REST call: GET {rest_endpoint}?q=FromCurrency='{fc}';"
-              f"ToCurrency='{tc}';ConversionDate='{rate_date}';ConversionRateType='{rate_type}'")
-    try:
-        q = (f"FromCurrency='{fc}';ToCurrency='{tc}';"
-             f"ConversionDate='{rate_date}';ConversionRateType='{rate_type}'")
-        r = httpx.get(rest_endpoint, params={"q": q, "fields": "ConversionRate"},
-                      auth=_auth(cfg), timeout=15,
-                      headers={"Accept": "application/json"})
-        if r.status_code == 200:
-            items = r.json().get("items", [])
-            if items:
-                rate_val = items[0].get("ConversionRate")
-                if rate_val is not None:
-                    try:
-                        rate = float(rate_val)
-                        if rate > 0:
-                            _RATE_CACHE[key] = rate
-                            logger.info("FX rate via Oracle REST: %s→%s on %s = %s",
-                                        fc, tc, rate_date, rate)
-                            _proc_log("INFO",
-                                      f"FX rate {fc}→{tc} on {rate_date}: {rate} "
-                                      f"(Oracle Daily Rates REST)")
-                            return rate
-                    except (TypeError, ValueError):
-                        pass
+    # 1. Try Oracle's currencyRates REST endpoint via CurrencyRatesFinder.
+    #    Endpoint shape was verified against a live Fusion tenant:
+    #    GET /fscmRestApi/resources/11.13.18.05/currencyRates
+    #      ?finder=CurrencyRatesFinder;fromCurrency=USD,toCurrency=INR,
+    #              startDate=2025-12-16,endDate=2025-12-16,
+    #              currencyConversionType=Corporate
+    #    Returns items: [{ConversionRate: 83.767, ...}].
+    #    Field names are CASE-SENSITIVE and require comma separators inside the
+    #    finder. The (legacy) /dailyRates path returns 404 in modern tenants.
+    rest_endpoint = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/currencyRates"
+    def _try_direction(src: str, dst: str) -> "float | None":
+        finder = (f"CurrencyRatesFinder;fromCurrency={src},toCurrency={dst},"
+                  f"startDate={rate_date},endDate={rate_date},"
+                  f"currencyConversionType={rate_type}")
+        _proc_log("INFO",
+                  f"FX rate REST call: GET {rest_endpoint}?finder={finder}")
+        try:
+            resp = httpx.get(rest_endpoint,
+                             params={"finder": finder, "limit": 5,
+                                     "fields": "FromCurrency,ToCurrency,ConversionDate,ConversionRate"},
+                             auth=_auth(cfg), timeout=15,
+                             headers={"Accept": "application/json"})
+            if resp.status_code != 200:
+                _proc_log("WARNING",
+                          f"FX rate REST returned status {resp.status_code} for "
+                          f"{src}→{dst} on {rate_date}")
+                return None
+            items = resp.json().get("items", [])
+            if not items:
+                _proc_log("WARNING",
+                          f"FX rate REST returned no items for {src}→{dst} on {rate_date}")
+                return None
+            rv = items[0].get("ConversionRate")
+            if rv is None:
+                return None
+            try:
+                rate_f = float(rv)
+                if rate_f > 0:
+                    return rate_f
+            except (TypeError, ValueError):
+                pass
+            return None
+        except Exception as e:
+            logger.debug("Oracle currencyRates lookup failed for %s→%s: %s", src, dst, e)
             _proc_log("WARNING",
-                      f"FX rate REST returned no items for {fc}→{tc} on {rate_date} "
-                      f"— falling back to local table")
-        else:
-            _proc_log("WARNING",
-                      f"FX rate REST returned status {r.status_code} for {fc}→{tc} "
-                      f"— falling back to local table")
-    except Exception as e:
-        logger.debug("Oracle daily rates lookup failed for %s→%s: %s", fc, tc, e)
-        _proc_log("WARNING",
-                  f"FX rate REST call failed ({e}) — falling back to local table")
+                      f"FX rate REST call raised ({e}) for {src}→{dst} — falling back")
+            return None
+
+    # Direct: from→to
+    rate = _try_direction(fc, tc)
+    if rate is not None:
+        _RATE_CACHE[key] = rate
+        logger.info("FX rate via Oracle REST: %s→%s on %s = %s", fc, tc, rate_date, rate)
+        _proc_log("INFO",
+                  f"FX rate {fc}→{tc} on {rate_date}: {rate} "
+                  f"(Oracle currencyRates REST — direct)")
+        return rate
+    # Inverse: try to→from, then 1/rate
+    inv = _try_direction(tc, fc)
+    if inv is not None and inv > 0:
+        rate = 1.0 / inv
+        _RATE_CACHE[key] = rate
+        logger.info("FX rate via Oracle REST (inverse): %s→%s = %.6f", fc, tc, rate)
+        _proc_log("INFO",
+                  f"FX rate {fc}→{tc} on {rate_date}: {rate:.6f} "
+                  f"(Oracle currencyRates REST — inverse of {tc}→{fc}={inv})")
+        return rate
 
     # 2. Fallback table — direct
     if (fc, tc) in _FX_FALLBACK:
