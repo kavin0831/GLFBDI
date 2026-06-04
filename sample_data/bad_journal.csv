@@ -1,6 +1,6 @@
 date,company,cost_center,account,segment4,segment5,segment6,description,debit,credit,currency
-2025-12-16,120,10,60230,121,000,000,Rent expense,5000,,USD
-2025-12-16,120,10,60230,121,000,000,Utilities expense,3000,,USD
-2025-12-16,120,10,60230,121,000,000,AP accrual,,10000,USD
-2025-12-16,120,10,99999,121,000,000,Missing amounts row,,,USD
-2025-12-16,120,10,60230,121,000,000,Extra entry breaking balance,500,,USD
+16-12-2025,120,10,60230,121,0,0,Rent expense,5000,,USD
+16-DEC-2026,120,10,60230,121,0,0,Utilities expense,3000,,USD
+16-12-2025,120,10,60230,121,0,0,AP accrual,,10000,USD
+16-12-2025,120,10,99999,121,0,0,Missing amounts row,,,USD
+16-12-2025,120,10,60230,121,0,0,Extra entry breaking balance,500,,USD

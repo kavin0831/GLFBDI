@@ -37,3 +37,12 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# AP test artifacts (local dev only — sample data lives in apinvoiceimporttest/)
+apinvoiceimporttest.zip
+apinvoiceimporttest/AP-TEST-*.zip
+apinvoiceimporttest/post_upload.py
+boot.err
+
+storage/logs/
+storage/

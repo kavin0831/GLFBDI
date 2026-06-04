@@ -163,15 +163,16 @@ class AppSettings(_AttrDoc):
 class JournalRequest(_AttrDoc):
     def __init__(self, **kwargs):
         defaults = {
-            "id":              str(uuid.uuid4()),
-            "status":          "RECEIVED",
-            "current_stage":   "QUEUED",
-            "created_at":      datetime.now(timezone.utc),
-            "updated_at":      datetime.now(timezone.utc),
-            "total_rows":      0,
-            "good_rows":       0,
-            "bad_rows":        0,
-            "approval_status": "NOT_REQUIRED",
+            "id":               str(uuid.uuid4()),
+            "transaction_type": "GL",          # "GL" | "AP"
+            "status":           "RECEIVED",
+            "current_stage":    "QUEUED",
+            "created_at":       datetime.now(timezone.utc),
+            "updated_at":       datetime.now(timezone.utc),
+            "total_rows":       0,
+            "good_rows":        0,
+            "bad_rows":         0,
+            "approval_status":  "NOT_REQUIRED",
         }
         defaults.update(kwargs)
         super().__init__(defaults)
@@ -347,17 +348,32 @@ def get_db():
 
 # ── Default settings ──────────────────────────────────────────────────────────
 
+_AP_JOB = "oracle/apps/ess/financials/payables/invoices/transactions,APXIIMPT"
+
 _DEFAULT_SETTINGS = {
     # Placeholders — fill in real values via the /settings page after first run.
     "fusion_url":              "",
     "fusion_username":         "",
     "fusion_password":         "",
+    # ── GL (Journal Import) ──────────────────────────────────────────────────
     "fusion_document_account": "fin$/generalLedger$/import$",
     "fusion_job_name":         _CORRECT_JOB,
+    "fusion_ledger_name":      "US Primary Ledger",
+    # ── AP (Payables Invoice Import) ─────────────────────────────────────────
+    "ap_document_account":     "fin$/payables$/import$",
+    "ap_job_name":             _AP_JOB,
+    "ap_business_unit_id":     "",            # numeric ID (e.g. 300000046987012)
+    "ap_business_unit_name":   "",            # human label (e.g. US1 Business Unit)
+    "ap_ledger_id":            "",            # numeric ID (e.g. 300000046975971)
+    "ap_source":               "External",
+    "ap_pay_group":            "1000",
+    "ap_invoice_group":        "",            # default Import Set token
+    # ── Gmail polling ────────────────────────────────────────────────────────
     "gmail_credentials_file":  "config/gmail_credentials.json",
     "gmail_token_file":        "config/gmail_token.json",
     "gmail_poll_seconds":      60,
     "gmail_subject_filter":    "journal upload",
+    "gmail_subject_filter_ap": "invoice upload",   # separate filter for AP polling
     # App Password mode (no OAuth) — set these via /settings
     "gmail_user":              "",
     "gmail_app_password":      "",
@@ -439,6 +455,29 @@ def init_db():
                 ]},
                 {"$set": {"gmail_token_file": "config/gmail_token.json"}},
             )
+            # Backfill AP-related setting fields if missing
+            ap_setonly = {k: v for k, v in _DEFAULT_SETTINGS.items() if k.startswith("ap_") or k == "gmail_subject_filter_ap"}
+            existing = mdb["app_settings"].find_one({"_id": "settings"}) or {}
+            missing  = {k: v for k, v in ap_setonly.items() if k not in existing}
+            if missing:
+                mdb["app_settings"].update_one({"_id": "settings"}, {"$set": missing})
+                logger.info("Backfilled %d AP setting fields", len(missing))
+
+        # Backfill transaction_type='GL' on all existing journal_requests
+        # so the dashboard tab filter works correctly.
+        try:
+            res = mdb["journal_requests"].update_many(
+                {"transaction_type": {"$exists": False}},
+                {"$set": {"transaction_type": "GL"}},
+            )
+            if res.modified_count:
+                logger.info("Backfilled transaction_type=GL on %d legacy requests",
+                            res.modified_count)
+        except Exception as e:
+            logger.warning("transaction_type backfill skipped: %s", e)
+
+        # Indexes for the new field
+        mdb["journal_requests"].create_index("transaction_type", sparse=True)
         logger.info("MongoDB ready — %s", DB_NAME)
     except Exception as e:
         logger.error("MongoDB init failed: %s", e)

@@ -59,6 +59,142 @@ ORACLE_FIELDS: dict[str, str] = {
     "Reconciliation Reference":              "Reconciliation reference text",
 }
 
+# ── AP Invoice Import target fields (header + line) ──────────────────────────
+AP_HEADER_FIELDS: dict[str, str] = {
+    "*Invoice ID":          "Client-generated unique invoice identifier for matching header to lines",
+    "*Business Unit":       "Business unit name, BU, operating unit, organization",
+    "*Source":              "Invoice source, e.g. External, INVOICE GATEWAY, ERS, SPREADSHEET",
+    "*Invoice Number":      "Invoice number, voucher number, supplier invoice reference",
+    "*Invoice Amount":      "Invoice total amount, gross amount, invoice value",
+    "*Invoice Date":        "Invoice date, billing date, document date",
+    "**Supplier Name":      "Supplier name, vendor name, payee name",
+    "**Supplier Number":    "Supplier number, vendor number, supplier code, vendor id",
+    "*Supplier Site":       "Supplier site code, vendor site, address code, payment site",
+    "Invoice Currency":     "Invoice currency code, ISO currency, e.g. USD, INR",
+    "Payment Currency":     "Payment currency code",
+    "Description":          "Invoice description, narration, remarks, memo",
+    "Import Set":           "Import set token, batch identifier for grouping invoices",
+    "*Invoice Type":        "Invoice type, STANDARD, CREDIT, DEBIT, PREPAYMENT, MIXED",
+    "Legal Entity":         "Legal entity name",
+    "*Payment Terms":       "Payment terms name, e.g. Net 30, Immediate, 2/10 Net 30",
+    "Terms Date":           "Payment terms start date",
+    "Goods Received Date":  "Date goods received",
+    "Invoice Received Date":"Invoice received date",
+    "Accounting Date":      "Accounting date for the invoice",
+    "Payment Method":       "Payment method, e.g. CHECK, EFT, WIRE",
+    "Pay Group":            "Payment grouping, e.g. Standard, Employee",
+    "Pay Alone":            "Pay alone flag Y or N",
+    "Discountable Amount":  "Discountable amount on the invoice",
+    "Conversion Rate Type": "FX conversion rate type",
+    "Conversion Date":      "FX conversion date",
+    "Conversion Rate":      "FX conversion rate value",
+    "Liability Combination":"Liability account combination flexfield",
+    "Document Category Code":"Document category, e.g. Standard Invoice",
+    "Voucher Number":       "Voucher number for sequencing",
+    "Calculate Tax During Import":"Calculate tax during import flag Y or N",
+}
+
+AP_LINE_FIELDS: dict[str, str] = {
+    "*Invoice ID":           "Link back to invoice header — must match a header *Invoice ID",
+    "Line Number":           "Line number within the invoice, 1-based",
+    "*Line Type":            "Line type, ITEM, TAX, FREIGHT, MISCELLANEOUS, PREPAY, RETAINAGE RELEASE",
+    "*Amount":               "Line amount, line value, line total, expense amount",
+    "Invoice Quantity":      "Quantity invoiced",
+    "Unit Price":            "Unit price per item",
+    "UOM":                   "Unit of measure",
+    "Description":           "Line description, line narration, item description",
+    "PO Number":             "Purchase order number for PO match",
+    "PO Line Number":        "PO line number",
+    "PO Schedule Number":    "PO shipment number",
+    "PO Distribution Number":"PO distribution number",
+    "Distribution Combination":"Charge account code combination — explicit GL account string",
+    "Distribution Set":      "Distribution set name — predefined account split rule",
+    "Accounting Date":       "Line accounting date",
+    "Tax Classification Code":"Tax classification code, e.g. STANDARD, EXEMPT",
+    "Final Match":           "Final match flag Y or N",
+    "Withholding Tax Group": "Withholding tax group name",
+    "Project Number":        "Project number",
+    "Task Number":           "Task number",
+    "Expenditure Type":      "Project expenditure type",
+    "Expenditure Organization":"Project expenditure organization",
+}
+
+AP_ALIASES: dict[str, list[str]] = {
+    "*Invoice ID":      ["invoice id","invoice_id","inv id","invoiceid"],
+    "*Business Unit":   ["business unit","bu","business_unit","operating unit","org","organization","ou"],
+    "*Source":          ["source","invoice source","src","origin"],
+    "*Invoice Number":  ["invoice number","invoice no","inv no","inv number","invoice num","voucher","voucher number","bill number","supplier invoice number"],
+    "*Invoice Amount":  ["invoice amount","total","gross amount","invoice total","total amount","amount","gross","bill amount"],
+    "*Invoice Date":    ["invoice date","bill date","document date","inv date","billing date"],
+    "**Supplier Name":  ["supplier name","vendor name","supplier","vendor","payee","payee name"],
+    "**Supplier Number":["supplier number","vendor number","supplier no","vendor no","supplier code","vendor code","supplier id","vendor id"],
+    "*Supplier Site":   ["supplier site","vendor site","site","site code","supplier site code","address code","pay site","payment site"],
+    "Invoice Currency": ["invoice currency","currency","ccy","curr","inv currency"],
+    "Payment Currency": ["payment currency","pay currency","pay ccy"],
+    "Description":      ["description","memo","remarks","narration","desc","line description","comments","line_description"],
+    "Import Set":       ["import set","invoice group","import group","group","batch","invoice batch"],
+    "*Invoice Type":    ["invoice type","inv type","type","document type"],
+    "Legal Entity":     ["legal entity","le","entity name"],
+    "*Payment Terms":   ["payment terms","payment term","terms","term","payterms","pmt terms","payment_terms","payment_term"],
+    "Terms Date":       ["terms date","payment terms date","pay terms date"],
+    "Accounting Date":  ["accounting date","gl date","accounting_date"],
+    "Payment Method":   ["payment method","pay method","payment_method","method of payment"],
+    "Pay Group":        ["pay group","payment group","paygroup"],
+    "Conversion Rate":  ["conversion rate","fx rate","exchange rate","rate"],
+    "Line Number":      ["line number","line no","line","line_no","line_number"],
+    "*Line Type":       ["line type","line_type","type"],
+    "*Amount":          ["amount","line amount","line total","expense amount","line_amount","amt","value"],
+    "Invoice Quantity": ["quantity","qty","invoice quantity","quantity invoiced"],
+    "Unit Price":       ["unit price","price","unit_price","rate per unit"],
+    "UOM":              ["uom","unit of measure","unit","measure"],
+    "PO Number":        ["po number","purchase order","po","po_number","purchase order number"],
+    "Distribution Combination":["distribution combination","charge account","gl account","account combination","dist combination","dist_combination","expense account","account"],
+    "Distribution Set":["distribution set","dist set","dist_set","distribution_set","accounting distribution"],
+    "Tax Classification Code":["tax classification","tax classification code","tax code","tax class"],
+}
+
+_AP_HEADER_SET = set(AP_HEADER_FIELDS.keys())
+_AP_LINE_SET   = set(AP_LINE_FIELDS.keys())
+_AP_NOSTAR     = {f.lstrip("*").strip().lower(): f
+                   for f in (_AP_HEADER_SET | _AP_LINE_SET)}
+
+# AP DB column aliases (Oracle's AP_INVOICES_INTERFACE / AP_INVOICE_LINES_INTERFACE)
+_AP_DB_COLUMN_ALIASES: dict[str, str] = {
+    "invoice_id":           "*Invoice ID",
+    "operating_unit":       "*Business Unit",
+    "source":               "*Source",
+    "invoice_num":          "*Invoice Number",
+    "invoice_amount":       "*Invoice Amount",
+    "invoice_date":         "*Invoice Date",
+    "vendor_name":          "**Supplier Name",
+    "vendor_num":           "**Supplier Number",
+    "vendor_site_code":     "*Supplier Site",
+    "invoice_currency_code":"Invoice Currency",
+    "payment_currency_code":"Payment Currency",
+    "description":          "Description",
+    "invoice_type_lookup_code":"*Invoice Type",
+    "terms_name":           "*Payment Terms",
+    "terms_date":           "Terms Date",
+    "accounting_date":      "Accounting Date",
+    "payment_method_code":  "Payment Method",
+    "pay_group_lookup_code":"Pay Group",
+    "exchange_rate":        "Conversion Rate",
+    "exchange_rate_type":   "Conversion Rate Type",
+    "exchange_date":        "Conversion Date",
+    "legal_entity_name":    "Legal Entity",
+    # Line columns
+    "line_number":          "Line Number",
+    "line_type_lookup_code":"*Line Type",
+    "amount":               "*Amount",
+    "quantity_invoiced":    "Invoice Quantity",
+    "unit_price":           "Unit Price",
+    "po_number":            "PO Number",
+    "po_line_number":       "PO Line Number",
+    "dist_code_concatenated":"Distribution Combination",
+    "distribution_set_name":"Distribution Set",
+    "tax_classification_code":"Tax Classification Code",
+}
+
 # Canonical field lookup: strip leading * for user-friendly matches
 _ORACLE_FIELD_SET = set(ORACLE_FIELDS.keys())
 _ORACLE_FIELD_NOSTAR = {f.lstrip("*").strip().lower(): f for f in _ORACLE_FIELD_SET}
@@ -220,6 +356,76 @@ def map_column(source_col: str, history_boost: dict[str, tuple[str, float]] | No
         "reason": f"Semantic similarity {best_sim:.0%} → '{best_field}'." if best_sim >= 0.40 else "No confident match found.",
         "method": "embedding",
     }
+
+
+# ── AP Invoice mapping ───────────────────────────────────────────────────────
+
+def _ap_alias_match(source_col: str) -> Optional[str]:
+    norm = _normalize(source_col)
+    for field, aliases in AP_ALIASES.items():
+        if norm in aliases:
+            return field
+    return None
+
+
+def map_ap_column(source_col: str, target_set: str = "both") -> dict:
+    """
+    Map one source column to an AP Invoice FBDI field.
+    target_set: "header" | "line" | "both"
+    Returns same dict shape as map_column().
+    """
+    pool: set[str] = set()
+    if target_set in ("header", "both"): pool |= _AP_HEADER_SET
+    if target_set in ("line",   "both"): pool |= _AP_LINE_SET
+
+    # Exact (full name with stars)
+    if source_col in pool:
+        return {"source_field": source_col, "target_field": source_col,
+                "confidence": 1.0, "reason": "Exact AP FBDI column name.", "method": "exact"}
+
+    nostar = source_col.lstrip("*").strip().lower()
+    if nostar in _AP_NOSTAR and _AP_NOSTAR[nostar] in pool:
+        return {"source_field": source_col, "target_field": _AP_NOSTAR[nostar],
+                "confidence": 0.99, "reason": "Matched AP field name (without prefix).",
+                "method": "exact"}
+
+    db_key = source_col.strip().lower()
+    if db_key in _AP_DB_COLUMN_ALIASES and _AP_DB_COLUMN_ALIASES[db_key] in pool:
+        return {"source_field": source_col, "target_field": _AP_DB_COLUMN_ALIASES[db_key],
+                "confidence": 0.99, "reason": "Matched AP interface table column.",
+                "method": "exact"}
+
+    hit = _ap_alias_match(source_col)
+    if hit and hit in pool:
+        return {"source_field": source_col, "target_field": hit,
+                "confidence": 0.95, "reason": "Matched via AP alias dictionary.", "method": "alias"}
+
+    # Embedding fallback against AP field descriptions only
+    descs = {**AP_HEADER_FIELDS, **AP_LINE_FIELDS}
+    fields_in_pool = [f for f in descs if f in pool]
+    if not fields_in_pool:
+        return {"source_field": source_col, "target_field": None,
+                "confidence": 0.0, "reason": "No AP target pool.", "method": "embedding"}
+    model = _get_model()
+    field_texts = [f"{f.lower()} {descs[f]} {' '.join(AP_ALIASES.get(f, []))}" for f in fields_in_pool]
+    embs = model.encode(field_texts, normalize_embeddings=True)
+    col_vec = model.encode([_normalize(source_col)], normalize_embeddings=True)[0]
+    sims = embs.dot(col_vec)
+    best_idx = int(np.argmax(sims))
+    best_sim = float(sims[best_idx])
+    best_field = fields_in_pool[best_idx]
+    return {
+        "source_field": source_col,
+        "target_field": best_field if best_sim >= 0.40 else None,
+        "confidence": round(best_sim, 4),
+        "reason": f"Semantic match {best_sim:.0%} → '{best_field}'." if best_sim >= 0.40 else "No confident AP match.",
+        "method": "embedding",
+    }
+
+
+def map_all_ap_columns(source_columns: list[str], target_set: str = "both") -> list[dict]:
+    """Map every column for an AP invoice file."""
+    return [map_ap_column(c, target_set) for c in source_columns]
 
 
 def map_all_columns(

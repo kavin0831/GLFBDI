@@ -37,6 +37,15 @@ from database import (
 from services.fusion_service import test_connection
 from services.gmail_service import gmail_available
 from workflow import process_request
+from workflow_ap import process_ap_request
+
+
+def _dispatch_processing(req_id: str, txn_type: str = "GL") -> None:
+    """Pick the right pipeline based on transaction_type ('GL' or 'AP')."""
+    if (txn_type or "").upper() == "AP":
+        threading.Thread(target=process_ap_request, args=(req_id,), daemon=True).start()
+    else:
+        threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
 
 # ── Storage dirs (must exist before logging) ──────────────────────────────────
 STORAGE = Path(__file__).parent / "storage"
@@ -207,6 +216,21 @@ def _store_and_verify_upload(req_id: str, filename: str, content,
 
 def _create_and_process(req_id, email_id, sender, subject, file_name,
                         file_type, file_size, cfg):
+    # Route by subject keyword — AP if AP filter matches, else GL.
+    txn = "GL"
+    ap_filter = (getattr(cfg, "gmail_subject_filter_ap", "") or "").strip().lower()
+    if ap_filter and ap_filter in (subject or "").lower():
+        txn = "AP"
+    extra = {}
+    if txn == "AP":
+        extra.update(
+            ap_business_unit_id   = cfg.ap_business_unit_id,
+            ap_business_unit_name = cfg.ap_business_unit_name,
+            ap_ledger_id          = cfg.ap_ledger_id,
+            ap_source             = cfg.ap_source,
+            ap_pay_group          = cfg.ap_pay_group,
+            ap_invoice_group      = cfg.ap_invoice_group,
+        )
     with SessionLocal() as db:
         req = JournalRequest(
             id=req_id, email_id=email_id, sender_email=sender,
@@ -214,28 +238,35 @@ def _create_and_process(req_id, email_id, sender, subject, file_name,
             file_path=file_name,  # virtual: file lives in MongoDB
             file_type=file_type, file_size_bytes=file_size,
             status="RECEIVED", current_stage="QUEUED",
-            # ledger_name gets filled in by the workflow once it resolves
-            # the value from the uploaded data file via Oracle REST.
+            transaction_type=txn,
+            **extra,
         )
-        db.add(req)
-        db.commit()
-    threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
-    logger.info("Queued Gmail attachment for %s: %s (%d bytes, MongoDB)",
-                req_id, file_name, file_size)
+        db.add(req); db.commit()
+    _dispatch_processing(req_id, txn)
+    logger.info("Queued Gmail %s attachment for %s: %s (%d bytes, MongoDB)",
+                txn, req_id, file_name, file_size)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
+async def dashboard(request: Request, txn: str = "gl"):
+    txn_u = (txn or "gl").upper()
+    if txn_u not in ("GL", "AP"): txn_u = "GL"
     with SessionLocal() as db:
-        reqs = db.query(JournalRequest).order_by(("created_at", -1)).limit(50).all()
-        total    = db.query(JournalRequest).count()
-        success  = db.query(JournalRequest).filter_by(status="SUCCEEDED").count()
-        failed   = db.query(JournalRequest).filter_by(status="FAILED").count()
+        reqs = (db.query(JournalRequest)
+                  .filter({"transaction_type": txn_u})
+                  .order_by(("created_at", -1))
+                  .limit(50).all())
+        total    = db.query(JournalRequest).filter_by(transaction_type=txn_u).count()
+        success  = db.query(JournalRequest).filter(
+            {"transaction_type": txn_u, "status": "SUCCEEDED"}).count()
+        failed   = db.query(JournalRequest).filter(
+            {"transaction_type": txn_u, "status": "FAILED"}).count()
         running  = db.query(JournalRequest).filter(
-            {"status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
+            {"transaction_type": txn_u,
+             "status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
     return templates.TemplateResponse("dashboard.html", {
-        "request": request, "requests": reqs,
+        "request": request, "requests": reqs, "txn": txn_u,
         "total": total, "success": success, "failed": failed, "running": running,
         "gmail_ok": gmail_available(),
     })
@@ -329,61 +360,106 @@ async def api_request_detail(req_id: str):
 # ── Manual upload ─────────────────────────────────────────────────────────────
 @app.get("/upload", response_class=HTMLResponse)
 async def upload_page(request: Request):
-    return templates.TemplateResponse("upload.html", {"request": request})
+    return templates.TemplateResponse("upload.html",
+                                       {"request": request, "cfg": get_settings()})
 
 
-_ALLOWED_UPLOAD_EXT = {".zip", ".csv", ".txt"}
+_ALLOWED_UPLOAD_EXT_GL = {".zip", ".csv", ".txt"}
+_ALLOWED_UPLOAD_EXT_AP = {".zip", ".csv"}     # AP: only zip + csv (and zip must contain CSVs)
+
+
+def _check_ap_zip_has_csv(content: bytes) -> tuple[bool, str]:
+    """For AP uploads: a ZIP must contain at least one .csv file inside."""
+    import zipfile as _zf, io as _io
+    try:
+        with _zf.ZipFile(_io.BytesIO(content)) as zf:
+            for n in zf.namelist():
+                if n.lower().endswith(".csv"):
+                    return True, ""
+            return False, "AP ZIP must contain at least one .csv file inside"
+    except Exception as e:
+        return False, f"could not read ZIP: {e}"
 
 
 @app.post("/upload")
 async def upload_file(
     request: Request,
     files: List[UploadFile] = File(...),
+    transaction_type: str = Form("GL"),
     ledger_name: str = Form(""),
     accounting_date: str = Form(""),
     journal_name: str = Form(""),
     currency: str = Form("USD"),
     period_name: str = Form(""),
+    # AP-specific overrides (optional — fall back to /settings AP defaults)
+    ap_business_unit_id: str = Form(""),
+    ap_business_unit_name: str = Form(""),
+    ap_ledger_id: str = Form(""),
+    ap_source: str = Form(""),
+    ap_pay_group: str = Form(""),
+    ap_invoice_group: str = Form(""),
+    legal_entity: str = Form(""),
 ):
     cfg = get_settings()
+    txn = (transaction_type or "GL").upper()
+    allowed_ext = _ALLOWED_UPLOAD_EXT_AP if txn == "AP" else _ALLOWED_UPLOAD_EXT_GL
     req_ids = []
     errors = []
 
     for file in files:
         ext = Path(file.filename).suffix.lower()
-        if ext not in _ALLOWED_UPLOAD_EXT:
-            errors.append(f"{file.filename}: only .zip, .csv, .txt allowed")
+        if ext not in allowed_ext:
+            errors.append(f"{file.filename}: for {txn}, only {', '.join(sorted(allowed_ext))} allowed")
             continue
 
         req_id  = str(uuid.uuid4())
         content = await file.read()
 
+        # AP-specific: a ZIP must contain at least one .csv inside
+        if txn == "AP" and ext == ".zip":
+            ok, msg = _check_ap_zip_has_csv(content)
+            if not ok:
+                errors.append(f"{file.filename}: {msg}")
+                continue
+
         # All data lives in MongoDB — nothing written to local disk.
-        # Use the verified-store helper so a silent encrypt / write failure
-        # surfaces in logs instead of producing an orphan request with no
-        # Downloads entry. Skip the request entirely if storage fails.
         if not _store_and_verify_upload(req_id, file.filename, content, "manual_upload"):
             errors.append(f"{file.filename}: storage failed — see server log")
             continue
 
         with SessionLocal() as db:
-            req = JournalRequest(
+            req_kwargs = dict(
                 id=req_id, file_name=file.filename,
-                file_path=file.filename,  # virtual name only — file lives in MongoDB
+                file_path=file.filename,
                 file_type=ext.lstrip("."),
                 file_size_bytes=len(content), status="RECEIVED",
                 current_stage="QUEUED",
-                ledger_name=ledger_name or "",   # resolved later from data file
+                transaction_type=txn,
                 accounting_date=accounting_date,
-                journal_name=journal_name or Path(file.filename).stem,
-                currency_code=currency,
-                period_name=period_name,
                 sender_email="manual_upload",
             )
-            db.add(req)
-            db.commit()
+            if txn == "AP":
+                req_kwargs.update(
+                    ap_business_unit_id   = ap_business_unit_id   or cfg.ap_business_unit_id,
+                    ap_business_unit_name = ap_business_unit_name or cfg.ap_business_unit_name,
+                    ap_ledger_id          = ap_ledger_id          or cfg.ap_ledger_id,
+                    ap_source             = ap_source             or cfg.ap_source,
+                    ap_pay_group          = ap_pay_group          or cfg.ap_pay_group,
+                    ap_invoice_group      = ap_invoice_group      or cfg.ap_invoice_group,
+                    legal_entity          = legal_entity          or "",
+                    journal_name          = journal_name or Path(file.filename).stem,
+                )
+            else:
+                req_kwargs.update(
+                    ledger_name  = ledger_name or "",
+                    journal_name = journal_name or Path(file.filename).stem,
+                    currency_code= currency,
+                    period_name  = period_name,
+                )
+            req = JournalRequest(**req_kwargs)
+            db.add(req); db.commit()
 
-        threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
+        _dispatch_processing(req_id, txn)
         req_ids.append(req_id)
         logger.info("Queued upload: %s → %s (%d bytes, MongoDB-only)",
                     file.filename, req_id, len(content))
@@ -453,6 +529,16 @@ async def save_settings(
     app_base_url:          str = Form(""),
     gmail_user:            str = Form(""),
     gmail_app_password:    str = Form(""),
+    # ── AP-specific (optional) ───────────────────────────────────────────────
+    ap_document_account:   str = Form(""),
+    ap_job_name:           str = Form(""),
+    ap_business_unit_id:   str = Form(""),
+    ap_business_unit_name: str = Form(""),
+    ap_ledger_id:          str = Form(""),
+    ap_source:             str = Form(""),
+    ap_pay_group:          str = Form(""),
+    ap_invoice_group:      str = Form(""),
+    gmail_subject_filter_ap: str = Form(""),
 ):
     with SessionLocal() as db:
         cfg = db.get(AppSettings, 1)
@@ -468,10 +554,18 @@ async def save_settings(
         cfg.ess_max_minutes        = ess_max_minutes
         cfg.app_base_url           = app_base_url
         cfg.gmail_user             = gmail_user
-        # Only overwrite the password if something was typed; empty form field
-        # means "keep the existing encrypted value"
         if gmail_app_password:
             cfg.gmail_app_password = gmail_app_password
+        # AP — only overwrite if a value was actually sent (keeps previous defaults)
+        if ap_document_account:   cfg.ap_document_account   = ap_document_account
+        if ap_job_name:           cfg.ap_job_name           = ap_job_name
+        if ap_business_unit_id:   cfg.ap_business_unit_id   = ap_business_unit_id
+        if ap_business_unit_name: cfg.ap_business_unit_name = ap_business_unit_name
+        if ap_ledger_id:          cfg.ap_ledger_id          = ap_ledger_id
+        if ap_source:             cfg.ap_source             = ap_source
+        if ap_pay_group:          cfg.ap_pay_group          = ap_pay_group
+        if ap_invoice_group:      cfg.ap_invoice_group      = ap_invoice_group
+        if gmail_subject_filter_ap: cfg.gmail_subject_filter_ap = gmail_subject_filter_ap
         cfg.updated_at             = datetime.now(timezone.utc)
         db.commit()
     return RedirectResponse("/settings?msg=Settings+saved+successfully", status_code=303)
@@ -756,16 +850,25 @@ async def authorize_gmail():
 
 # ── File download ─────────────────────────────────────────────────────────────
 _FTYPE_TO_KIND = {
-    "zip": "fbdi_zip",
-    "csv": "fbdi_csv",
-    "bad": "bad_csv",
-    "log": "ess_log",
+    "zip":           "fbdi_zip",
+    "csv":           "fbdi_csv",
+    "bad":           "bad_csv",
+    "log":           "ess_log",
+    # AP-specific
+    "ap_hdr_csv":    "ap_hdr_csv",
+    "ap_line_csv":   "ap_line_csv",
+    "ap_report_pdf": "ap_report_pdf",
+    "ap_report_txt": "ap_report_txt",
 }
 _FTYPE_MIME = {
-    "zip": "application/zip",
-    "csv": "text/csv",
-    "bad": "text/csv",
-    "log": "application/zip",
+    "zip":           "application/zip",
+    "csv":           "text/csv",
+    "bad":           "text/csv",
+    "log":           "application/zip",
+    "ap_hdr_csv":    "text/csv",
+    "ap_line_csv":   "text/csv",
+    "ap_report_pdf": "application/pdf",
+    "ap_report_txt": "text/plain",
 }
 
 
@@ -797,7 +900,7 @@ def _resolve_versioned_kind(req_id: str, kind: str):
 
 
 @app.get("/download/{req_id}/{ftype}")
-async def download_file(req_id: str, ftype: str):
+async def download_file(req_id: str, ftype: str, inline: int = 0):
     from fastapi.responses import Response
     kind = _FTYPE_TO_KIND.get(ftype)
     if not kind:
@@ -806,11 +909,40 @@ async def download_file(req_id: str, ftype: str):
     if not result:
         return JSONResponse({"error": "file not found in DB"}, 404)
     content, filename = result
+    disp = "inline" if inline else "attachment"
     return Response(
         content=content,
         media_type=_FTYPE_MIME.get(ftype, "application/octet-stream"),
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'{disp}; filename="{filename}"'},
     )
+
+
+# ── AP Invoice Import Report — view PDF inline in browser ────────────────────
+
+@app.get("/request/{req_id}/ap-report")
+async def view_ap_report(req_id: str):
+    """View the AP Import Report PDF inline in the browser."""
+    from fastapi.responses import Response
+    result = _resolve_versioned_kind(req_id, "ap_report_pdf")
+    if not result:
+        # Fall back to .txt or .out report if no PDF was preserved
+        result = _resolve_versioned_kind(req_id, "ap_report_txt")
+        if not result:
+            return HTMLResponse(
+                "<html><body style='font-family:sans-serif;padding:40px'>"
+                "<h2>AP Import Report not available</h2>"
+                "<p>This may happen if:</p>"
+                "<ul><li>The job hasn't run the report yet</li>"
+                "<li>Oracle returned an empty report</li>"
+                "<li>The user lacks ERP Integrations Administrator role</li></ul>"
+                "<p>Try the <a href='/request/" + req_id + "'>Request Detail</a> page.</p>"
+                "</body></html>", status_code=404)
+        content, filename = result
+        return Response(content=content, media_type="text/plain",
+                        headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    content, filename = result
+    return Response(content=content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
 # ── Files API + per-file download ─────────────────────────────────────────────

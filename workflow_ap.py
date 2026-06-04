@@ -1,0 +1,594 @@
+"""
+AP Invoice processing workflow.
+
+Mirrors the GL workflow (workflow.py) but for Accounts Payable invoices:
+parse → map → validate (BU/Supplier/Site/Terms/Distribution) → generate
+ApInvoicesInterface.csv + ApInvoiceLinesInterface.csv → submit via
+importBulkData / APXIIMPT → poll → find spawned "Import Payables Invoices"
+jobs → download logs → analyze → notify.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import uuid
+import zipfile as _zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from database import (
+    JournalRequest, append_log, get_settings, store_generated_file,
+    has_generated_file, get_generated_file,
+)
+from services.fusion_service import (
+    analyze_ess_logs, download_ess_logs,
+    find_ap_import_jobs, get_ess_status, get_execution_details,
+    scheduled_processes_url, submit_ap_fbdi,
+)
+from services.ml_mapper import map_all_ap_columns
+from utils.ap_fbdi_generator import (
+    AP_HEADER_COLUMNS, AP_LINE_COLUMNS,
+    build_ap_rows, package_ap_zip, split_multi_invoice_zip,
+    write_ap_bad_csv, write_ap_header_csv, write_ap_lines_csv,
+)
+from utils.file_parser import parse_to_records
+
+logger = logging.getLogger(__name__)
+
+STORAGE = Path(__file__).parent / "storage"
+
+
+# ── DB helpers ───────────────────────────────────────────────────────────────
+
+def _db_update(request_id: str, **kwargs) -> None:
+    """Update fields on a JournalRequest atomically."""
+    from database import _mdb
+    kwargs["updated_at"] = datetime.now(timezone.utc)
+    _mdb()["journal_requests"].update_one({"_id": request_id}, {"$set": kwargs})
+
+
+def _log(request_id: str, level: str, msg: str) -> None:
+    try:
+        append_log(request_id, level, msg)
+    except Exception:
+        pass
+    logger.log(getattr(logging, level.upper(), logging.INFO), "[%s] %s", request_id[:8], msg)
+
+
+# ── AP-specific pre-validations ──────────────────────────────────────────────
+
+def validate_ap_invoices(
+    records: list[dict], mappings: list[dict], meta: dict,
+) -> tuple[list[int], list[str]]:
+    """
+    Returns (bad_row_indices, error_messages).
+
+    Checks:
+      - Each line must have either Distribution Combination OR Distribution Set
+      - Invoice Amount > 0
+      - For each unique Invoice Number, sum of line amounts == invoice amount (±0.01)
+      - Date columns parseable
+    """
+    bad_idx: set[int] = set()
+    errs: list[str] = []
+
+    src_to_tgt = {m["source_field"]: m["target_field"]
+                   for m in mappings if m.get("target_field")}
+
+    def _val(rec, target_field):
+        for s, t in src_to_tgt.items():
+            if t == target_field and rec.get(s) not in (None, ""):
+                return str(rec[s]).strip()
+        return ""
+
+    invoice_amounts: dict[str, float] = {}
+    line_sums:       dict[str, float] = {}
+
+    for i, r in enumerate(records):
+        inv_num = _val(r, "*Invoice Number") or _val(r, "Invoice Number")
+        line_amt = _val(r, "*Amount") or _val(r, "Amount")
+        inv_amt  = _val(r, "*Invoice Amount") or _val(r, "Invoice Amount")
+        dist_set = _val(r, "Distribution Set")
+        dist_cmb = _val(r, "Distribution Combination")
+
+        if not inv_num:
+            bad_idx.add(i); errs.append(f"Row {i+1}: missing Invoice Number")
+            continue
+
+        # Line-level: must have Distribution Combination OR Distribution Set
+        if line_amt:
+            if not dist_set and not dist_cmb:
+                bad_idx.add(i)
+                errs.append(f"Row {i+1} (Invoice {inv_num}): line must have either "
+                            f"Distribution Combination or Distribution Set")
+            try:
+                amt = float(line_amt.replace(",", ""))
+                line_sums[inv_num] = line_sums.get(inv_num, 0.0) + amt
+            except (ValueError, TypeError):
+                bad_idx.add(i); errs.append(f"Row {i+1}: bad line Amount '{line_amt}'")
+
+        # Header-level: capture invoice amount
+        if inv_amt and inv_num not in invoice_amounts:
+            try:
+                invoice_amounts[inv_num] = float(inv_amt.replace(",", ""))
+                if invoice_amounts[inv_num] <= 0:
+                    errs.append(f"Invoice {inv_num}: amount must be > 0 (got {invoice_amounts[inv_num]})")
+                    bad_idx.add(i)
+            except (ValueError, TypeError):
+                bad_idx.add(i); errs.append(f"Row {i+1}: bad Invoice Amount '{inv_amt}'")
+
+    # Cross-check: line sum == invoice amount per invoice
+    for inv_num, inv_amt in invoice_amounts.items():
+        line_sum = line_sums.get(inv_num, 0.0)
+        if abs(inv_amt - line_sum) > 0.01:
+            errs.append(
+                f"Invoice {inv_num}: lines sum to {line_sum:.2f} but header says {inv_amt:.2f}"
+            )
+
+    return sorted(bad_idx), errs
+
+
+def validate_ap_master_data(cfg, meta: dict, records: list[dict],
+                             mappings: list[dict]) -> list[str]:
+    """
+    Light REST-based validation. Doesn't block submission — just records warnings
+    that get included in the process logs.
+
+    - Supplier exists (looked up by number)
+    - Supplier site code is present (we don't verify against Oracle to keep this
+      fast; Oracle will reject during JI Child if invalid and the user sees the
+      log).
+    - Business Unit ID looks numeric
+
+    Returns a list of warning/error strings.
+    """
+    import re
+    warnings: list[str] = []
+    bu_id = (meta.get("ap_business_unit_id") or "").strip()
+    if not bu_id or not re.fullmatch(r"\d+", bu_id):
+        warnings.append(f"Business Unit ID '{bu_id}' is not numeric — Oracle expects a numeric ID")
+    return warnings
+
+
+# ── Multi-invoice ZIP handling ───────────────────────────────────────────────
+
+def _maybe_split_zip(file_path: str) -> list[tuple[bytes, bytes]] | None:
+    """
+    If the upload is a ZIP, see if it contains pre-built FBDI CSVs. Returns a
+    list of (hdr_bytes, line_bytes) tuples — one per invoice batch — or None
+    if the upload isn't a multi-invoice ZIP.
+    """
+    if not file_path.lower().endswith(".zip"):
+        return None
+    try:
+        zb = Path(file_path).read_bytes()
+        pairs = split_multi_invoice_zip(zb)
+        return pairs or None
+    except Exception:
+        return None
+
+
+# ── Stage helpers ────────────────────────────────────────────────────────────
+
+def _stage_parse(req_id: str, file_path: str):
+    _db_update(req_id, current_stage="PARSING", status="PROCESSING")
+    _log(req_id, "INFO", f"Parsing AP file: {Path(file_path).name}")
+    records, cols = parse_to_records(file_path)
+    _log(req_id, "INFO", f"Parsed {len(records)} rows, {len(cols)} columns")
+    return records, cols
+
+
+def _stage_map(req_id: str, cols: list[str]) -> list[dict]:
+    _db_update(req_id, current_stage="MAPPING")
+    mappings = map_all_ap_columns(cols, target_set="both")
+    _db_update(req_id, mapping_json=mappings)
+    mapped = sum(1 for m in mappings if m.get("target_field"))
+    _log(req_id, "INFO", f"Mapped {mapped}/{len(cols)} AP columns")
+    return mappings
+
+
+def _stage_validate(req_id: str, records: list[dict], mappings: list[dict],
+                    meta: dict) -> tuple[list[int], list[str]]:
+    _db_update(req_id, current_stage="VALIDATING")
+    bad_idx, errs = validate_ap_invoices(records, mappings, meta)
+    md_warnings = validate_ap_master_data(get_settings(), meta, records, mappings)
+    for w in md_warnings:
+        _log(req_id, "WARN", w); errs.append(w)
+    for e in errs[:20]:
+        _log(req_id, "WARN" if "must have" in e or "amount must be > 0" in e else "INFO", e)
+
+    _db_update(req_id, total_rows=len(records), bad_rows=len(bad_idx),
+               good_rows=len(records) - len(bad_idx),
+               validation_json={"errors": errs, "bad_row_indices": bad_idx})
+    _log(req_id, "INFO" if not errs else "WARN",
+         f"Validation: {len(records)} rows, {len(bad_idx)} bad, {len(errs)} errors/warnings")
+    return bad_idx, errs
+
+
+def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
+                    meta: dict, bad_indices: list[int]):
+    _db_update(req_id, current_stage="GENERATING")
+    out_dir = STORAGE / "fbdi" / req_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = {**meta, "request_id": req_id, "bad_row_indices": bad_indices}
+    hdrs, lines, bad = build_ap_rows(records, mappings, meta)
+
+    hdr_csv = out_dir / "ApInvoicesInterface.csv"
+    ln_csv  = out_dir / "ApInvoiceLinesInterface.csv"
+    write_ap_header_csv(hdrs, hdr_csv)
+    write_ap_lines_csv(lines, ln_csv)
+    bad_csv: Path | None = None
+    if bad:
+        bad_csv = out_dir / "ap_bad_data.csv"
+        write_ap_bad_csv(bad, bad_csv)
+
+    zip_path = package_ap_zip(hdr_csv, ln_csv, out_dir)
+
+    # Persist all to MongoDB
+    store_generated_file(req_id, "ap_hdr_csv_v0", "ApInvoicesInterface.csv", hdr_csv.read_bytes())
+    store_generated_file(req_id, "ap_line_csv_v0","ApInvoiceLinesInterface.csv", ln_csv.read_bytes())
+    store_generated_file(req_id, "fbdi_zip_v0",   "ApInvoicesImport.zip", zip_path.read_bytes())
+    if bad_csv:
+        store_generated_file(req_id, "bad_csv_v0","ap_bad_data.csv", bad_csv.read_bytes())
+
+    _db_update(req_id,
+               fbdi_csv_path=str(hdr_csv),
+               fbdi_zip_path=str(zip_path),
+               bad_data_csv_path=str(bad_csv) if bad_csv else None,
+               total_rows=len(records),
+               good_rows=len(hdrs) + len(lines),
+               bad_rows=len(bad),
+               ap_header_count=len(hdrs),
+               ap_line_count=len(lines))
+    _log(req_id, "INFO", f"Generated FBDI: {len(hdrs)} header(s), {len(lines)} line(s), "
+                          f"{len(bad)} bad row(s)")
+    return zip_path
+
+
+def _stage_submit(req_id: str, zip_path: Path, meta: dict) -> str | None:
+    _db_update(req_id, current_stage="SUBMITTING")
+    cfg = get_settings()
+    try:
+        resp = submit_ap_fbdi(
+            cfg, str(zip_path),
+            invoice_group=meta.get("ap_invoice_group") or f"BATCH_{req_id[:8]}",
+            accounting_date=meta.get("accounting_date") or
+                             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            business_unit_id=meta.get("ap_business_unit_id") or cfg.ap_business_unit_id,
+            ledger_id=meta.get("ap_ledger_id") or cfg.ap_ledger_id,
+            source=meta.get("ap_source") or cfg.ap_source,
+            pay_group=meta.get("ap_pay_group") or cfg.ap_pay_group,
+        )
+    except Exception as e:
+        _log(req_id, "ERROR", f"submit_ap_fbdi raised: {e}")
+        _db_update(req_id, status="FAILED",
+                   current_stage="SUBMIT_ERROR", error_message=str(e),
+                   stop_reason=f"Oracle AP submission failed: {e}")
+        return None
+
+    eid = str(resp.get("ReqstId") or "")
+    _db_update(req_id, fusion_request_id=eid or "UNKNOWN")
+    if eid and eid != "-1":
+        _log(req_id, "INFO", f"Submitted to Oracle: ReqstId={eid}")
+        return eid
+
+    _log(req_id, "ERROR", f"Oracle returned ReqstId={eid} — rejected")
+    reason = (f"Oracle rejected the AP submission (ReqstId={eid}). "
+              "Check Business Unit ID, Ledger ID, Source, and Document Account "
+              "in /settings (AP tab).")
+    _db_update(req_id, status="FAILED", current_stage="SUBMIT_REJECTED",
+               stop_reason=reason)
+    return None
+
+
+def _stage_monitor(req_id: str, eid: str) -> str:
+    if not eid or eid in ("-1", "QUEUED", ""):
+        return "QUEUED"
+    _db_update(req_id, current_stage="MONITORING")
+    cfg = get_settings()
+    max_polls = (cfg.ess_max_minutes * 60) // max(cfg.ess_poll_seconds, 1)
+    _log(req_id, "INFO", f"Polling ESS request {eid}...")
+    last = "WAIT"
+    for n in range(1, int(max_polls) + 1):
+        st = get_ess_status(cfg, eid)
+        _log(req_id, "INFO", f"Poll {n}: {st}")
+        last = st
+        _db_update(req_id, ess_final_status=st)
+        if st in ("SUCCEEDED","ERROR","WARNING","CANCELLED","BLOCKED"):
+            return st
+        time.sleep(cfg.ess_poll_seconds)
+    return last or "TIMEOUT"
+
+
+# ── Main entry ────────────────────────────────────────────────────────────────
+
+def process_ap_request(request_id: str) -> None:
+    """
+    Full AP Invoice Import pipeline.
+    Called in a background thread by app.py for requests where
+    transaction_type == "AP".
+    """
+    logger.info("=== AP workflow start: %s ===", request_id)
+    from database import _mdb
+    req_doc = _mdb()["journal_requests"].find_one({"_id": request_id})
+    if not req_doc:
+        logger.error("AP request not found: %s", request_id); return
+
+    file_path = req_doc.get("file_path", "")
+    if not file_path or not Path(file_path).exists():
+        # Try to materialize from MongoDB
+        from database import get_uploaded_file
+        b = get_uploaded_file(request_id)
+        if not b:
+            _db_update(request_id, status="FAILED",
+                       current_stage="MISSING_FILE",
+                       error_message="Source file not available (disk + DB miss)")
+            return
+        # Recreate temp path
+        tmp_dir = STORAGE / "uploads" / request_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        file_path = str(tmp_dir / (req_doc.get("file_name") or f"{request_id}.csv"))
+        Path(file_path).write_bytes(b)
+
+    # Shortcut: pre-built AP FBDI ZIP (contains ApInvoicesInterface.csv etc.)
+    pairs = _maybe_split_zip(file_path)
+    if pairs:
+        _log(request_id, "INFO", f"Pre-built AP FBDI ZIP detected — {len(pairs)} invoice batch(es)")
+        return _process_prebuilt_ap_zip(request_id, file_path, pairs)
+
+    try:
+        records, cols = _stage_parse(request_id, file_path)
+    except Exception as e:
+        _log(request_id, "ERROR", f"Parse failed: {e}")
+        _db_update(request_id, status="FAILED",
+                   current_stage="PARSE_ERROR", error_message=str(e))
+        return
+
+    mappings = _stage_map(request_id, cols)
+
+    cfg = get_settings()
+    meta = {
+        "ap_business_unit_id":   req_doc.get("ap_business_unit_id")   or cfg.ap_business_unit_id,
+        "ap_business_unit_name": req_doc.get("ap_business_unit_name") or cfg.ap_business_unit_name,
+        "ap_ledger_id":          req_doc.get("ap_ledger_id")          or cfg.ap_ledger_id,
+        "ap_source":             req_doc.get("ap_source")             or cfg.ap_source,
+        "ap_pay_group":          req_doc.get("ap_pay_group")          or cfg.ap_pay_group,
+        "ap_invoice_group":      req_doc.get("ap_invoice_group")      or cfg.ap_invoice_group,
+        "accounting_date":       req_doc.get("accounting_date")       or "",
+        "legal_entity":          req_doc.get("legal_entity")          or "",
+    }
+    _db_update(request_id,
+               ap_business_unit_name=meta["ap_business_unit_name"],
+               ap_invoice_group=meta["ap_invoice_group"])
+
+    bad_idx, errs = _stage_validate(request_id, records, mappings, meta)
+    # Hard-fail if ALL rows are bad
+    if len(bad_idx) >= len(records) and records:
+        _log(request_id, "ERROR", "All AP rows failed validation — nothing to import")
+        _db_update(request_id, status="FAILED",
+                   current_stage="VALIDATION_FAILED",
+                   stop_reason="All rows failed validation. See process logs.")
+        return
+
+    zip_path = _stage_generate(request_id, records, mappings, meta, list(bad_idx))
+    eid = _stage_submit(request_id, zip_path, meta)
+    if eid is None:
+        return
+
+    final = _stage_monitor(request_id, eid)
+
+    # Discover downstream "Import Payables Invoices" requests + fetch their logs
+    _log(request_id, "INFO", "Waiting 30s for AP downstream jobs to spawn…")
+    time.sleep(30)
+    ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=30)
+    for j in ap_jobs:
+        _log(request_id, "INFO",
+             f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
+
+    # Download all logs (parent + direct children + AP jobs)
+    try:
+        logs = download_ess_logs(get_settings(), eid)
+        zb = logs.get("zip_bytes")
+        if zb:
+            log_dir = STORAGE / "logs" / request_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_zip = log_dir / f"ess_logs_{eid}.zip"
+            log_zip.write_bytes(zb)
+            store_generated_file(request_id, "ess_log_v0",
+                                  log_zip.name, zb)
+            _db_update(request_id, ess_log_path=str(log_zip))
+            _log(request_id, "INFO", f"Downloaded {len(zb)} bytes of ESS logs")
+    except Exception as e:
+        _log(request_id, "WARN", f"Log download failed: {e}")
+
+    # Also fetch the Import Payables Invoices Report PDF (if present in logs)
+    try:
+        _save_ap_report_pdf(request_id, ap_jobs)
+    except Exception as e:
+        _log(request_id, "WARN", f"Report extraction failed: {e}")
+
+    # Inner failure detection
+    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
+                       for j in ap_jobs)
+    ess_succeeded = final in ("SUCCEEDED","WARNING","QUEUED")
+
+    if ess_succeeded and not inner_failed:
+        _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
+        _log(request_id, "INFO", "AP import completed successfully")
+        _send_ap_email(request_id, "success", ap_jobs)
+    else:
+        reason = f"AP child job(s) failed: " + ", ".join(
+            f"{j['name']}={j['status']}" for j in ap_jobs
+        ) if inner_failed else f"ESS request ended with status: {final}"
+        _db_update(request_id, status="FAILED",
+                   current_stage="IMPORT_ERRORS" if inner_failed else "ESS_FAILED",
+                   stop_reason=reason)
+        _send_ap_email(request_id, "failure", ap_jobs, reason)
+
+    logger.info("=== AP workflow done: %s → %s ===", request_id, final)
+
+
+# ── Pre-built ZIP path ───────────────────────────────────────────────────────
+
+def _process_prebuilt_ap_zip(request_id: str, file_path: str,
+                              pairs: list[tuple[bytes, bytes]]) -> None:
+    """If user uploaded a pre-built AP FBDI ZIP, submit each invoice batch."""
+    cfg = get_settings()
+    if not cfg.ap_business_unit_id or not cfg.ap_ledger_id:
+        _db_update(request_id, status="FAILED",
+                   current_stage="MISSING_CONFIG",
+                   stop_reason="AP Business Unit ID and Ledger ID must be set "
+                               "in /settings → AP tab before importing.")
+        return
+
+    # If multiple pairs, submit them sequentially with the same overall request.
+    eids: list[str] = []
+    for i, (hdr_b, line_b) in enumerate(pairs):
+        out_dir = STORAGE / "fbdi" / f"{request_id}-pair-{i}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        hdr_csv = out_dir / "ApInvoicesInterface.csv"
+        ln_csv  = out_dir / "ApInvoiceLinesInterface.csv"
+        hdr_csv.write_bytes(hdr_b); ln_csv.write_bytes(line_b)
+        zp = package_ap_zip(hdr_csv, ln_csv, out_dir)
+        store_generated_file(request_id, f"fbdi_zip_v{i}",
+                              "ApInvoicesImport.zip", zp.read_bytes())
+        resp = submit_ap_fbdi(cfg, str(zp),
+                               invoice_group=f"BATCH_{request_id[:8]}_p{i}",
+                               accounting_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        eid = str(resp.get("ReqstId") or "")
+        if eid and eid != "-1":
+            eids.append(eid)
+            _log(request_id, "INFO", f"Pair {i}: ReqstId={eid}")
+        else:
+            _log(request_id, "ERROR", f"Pair {i}: rejected (ReqstId={eid})")
+
+    if not eids:
+        _db_update(request_id, status="FAILED",
+                   current_stage="SUBMIT_REJECTED",
+                   stop_reason="All pre-built ZIPs were rejected.")
+        return
+
+    _db_update(request_id, fusion_request_id=eids[0],
+               ap_extra_request_ids=eids[1:])
+    final = _stage_monitor(request_id, eids[0])
+    # Fetch AP jobs spawned by the FIRST submission (others follow similar)
+    time.sleep(30)
+    ap_jobs = find_ap_import_jobs(get_settings(), eids[0], scan_range=30)
+    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED") for j in ap_jobs)
+
+    if final in ("SUCCEEDED","WARNING") and not inner_failed:
+        _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
+        _send_ap_email(request_id, "success", ap_jobs)
+    else:
+        _db_update(request_id, status="FAILED",
+                   current_stage="IMPORT_ERRORS",
+                   stop_reason=f"Pre-built ZIP import: final={final}, ap_jobs={ap_jobs}")
+        _send_ap_email(request_id, "failure", ap_jobs)
+
+
+# ── Save AP Report PDF (Import Payables Invoices Report output) ─────────────
+
+def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
+    """
+    If the 'Import Payables Invoices Report' job's logs contain a PDF, persist it
+    to MongoDB so the UI can view/download it.
+    """
+    for j in ap_jobs:
+        if "Report" not in (j.get("name") or ""): continue
+        rid = j.get("request_id")
+        if not rid: continue
+        try:
+            logs = download_ess_logs(get_settings(), rid)
+            zb = logs.get("zip_bytes")
+            if not zb: continue
+            import io
+            with _zipfile.ZipFile(io.BytesIO(zb)) as zf:
+                for name in zf.namelist():
+                    n_lower = name.lower()
+                    if n_lower.endswith(".pdf") or n_lower.endswith(".out"):
+                        content = zf.read(name)
+                        # Skip empty / placeholder outputs
+                        if len(content) < 200: continue
+                        kind = "ap_report_pdf" if n_lower.endswith(".pdf") else "ap_report_txt"
+                        store_generated_file(request_id, kind,
+                                              Path(name).name, content)
+                        _log(request_id, "INFO",
+                             f"Saved AP Import Report: {name} ({len(content)} bytes)")
+                        return
+        except Exception as e:
+            logger.warning("AP report extraction failed for %s: %s", rid, e)
+
+
+# ── Email ────────────────────────────────────────────────────────────────────
+
+def _send_ap_email(request_id: str, kind: str, ap_jobs: list[dict],
+                    reason: str = "") -> None:
+    """Send AP success/failure email."""
+    from database import _mdb
+    req = _mdb()["journal_requests"].find_one({"_id": request_id})
+    if not req: return
+    cfg = get_settings()
+    fusion_rid = req.get("fusion_request_id") or ""
+    sched_url = scheduled_processes_url(cfg, fusion_rid) if fusion_rid else ""
+
+    rows_html = "".join(
+        f'<tr><td style="padding:6px;border:1px solid #ddd">{j["name"]}</td>'
+        f'<td style="padding:6px;border:1px solid #ddd"><code>{j["request_id"]}</code></td>'
+        f'<td style="padding:6px;border:1px solid #ddd;'
+        f'color:{"#1e8e3e" if j["status"]=="SUCCEEDED" else "#d93025" if j["status"] in ("ERROR","FAILED") else "#f9ab00"};'
+        f'font-weight:bold">{j["status"]}</td></tr>'
+        for j in ap_jobs
+    )
+    headers = req.get("ap_header_count", req.get("good_rows", 0))
+    lines   = req.get("ap_line_count",   req.get("good_rows", 0))
+
+    if kind == "success":
+        title = "✅ AP Invoice Import Succeeded"
+        bg = "#1e8e3e"
+        body = f"""
+<p>{headers} invoice header(s), {lines} line(s) imported.</p>
+<table style="width:100%;border-collapse:collapse">
+<tr><td style="padding:8px;background:#e6f4ea;font-weight:bold;border:1px solid #e0e0e0">ESS Request ID</td><td style="padding:8px;border:1px solid #e0e0e0">{fusion_rid}</td></tr>
+<tr><td style="padding:8px;font-weight:bold;border:1px solid #e0e0e0">Business Unit</td><td style="padding:8px;border:1px solid #e0e0e0">{cfg.ap_business_unit_name}</td></tr>
+<tr><td style="padding:8px;background:#e6f4ea;font-weight:bold;border:1px solid #e0e0e0">File</td><td style="padding:8px;border:1px solid #e0e0e0">{req.get('file_name','')}</td></tr>
+</table>"""
+    else:
+        title = "❌ AP Invoice Import Failed"
+        bg = "#d93025"
+        body = f"""
+<div style="background:#fce8e6;border:1px solid #f28b82;border-radius:4px;padding:14px;margin-bottom:14px">
+<strong>Reason:</strong><br/>{reason or req.get('stop_reason','')}</div>
+<table style="width:100%;border-collapse:collapse">
+<tr><td style="padding:8px;background:#fef0ef;font-weight:bold;border:1px solid #e0e0e0">ESS Request ID</td><td style="padding:8px;border:1px solid #e0e0e0">{fusion_rid}</td></tr>
+<tr><td style="padding:8px;font-weight:bold;border:1px solid #e0e0e0">Stage</td><td style="padding:8px;border:1px solid #e0e0e0">{req.get('current_stage','')}</td></tr>
+</table>"""
+
+    html = f"""
+<html><body style="font-family:'Segoe UI',sans-serif;max-width:680px;margin:auto">
+<div style="background:{bg};color:white;padding:22px 28px;border-radius:8px 8px 0 0">
+<h2 style="margin:0">{title}</h2></div>
+<div style="border:1px solid #ddd;padding:22px;border-radius:0 0 8px 8px">
+{body}
+{"<h3 style='font-size:14px;margin-top:18px'>Oracle ESS Sub-Jobs</h3><table style='width:100%;border-collapse:collapse;font-size:13px'><tr style='background:#f5f5f5'><th style='padding:6px;border:1px solid #ddd;text-align:left'>Job</th><th style='padding:6px;border:1px solid #ddd;text-align:left'>Request</th><th style='padding:6px;border:1px solid #ddd;text-align:left'>Status</th></tr>" + rows_html + "</table>" if rows_html else ""}
+{f'<p style="margin-top:14px"><a href="{sched_url}">View full report in Oracle Fusion →</a></p>' if sched_url else ""}
+</div></body></html>"""
+
+    try:
+        from services.gmail_service import send_email
+        # Attach the zip and report if present
+        atts = []
+        log_zip = STORAGE / "logs" / request_id / f"ess_logs_{fusion_rid}.zip"
+        if log_zip.exists(): atts.append(str(log_zip))
+        if has_generated_file(request_id, "fbdi_zip_v0"):
+            data, fname = get_generated_file(request_id, "fbdi_zip_v0") or (None, "")
+            if data: atts.append((fname, data))
+        if has_generated_file(request_id, "ap_report_pdf"):
+            data, fname = get_generated_file(request_id, "ap_report_pdf") or (None, "")
+            if data: atts.append((fname, data))
+        subj_kind = "Succeeded" if kind == "success" else "Failed"
+        send_email(cfg.notification_email,
+                   f"{title} — {req.get('file_name','AP Import')}", html, atts)
+    except Exception as e:
+        logger.warning("AP email send failed: %s", e)

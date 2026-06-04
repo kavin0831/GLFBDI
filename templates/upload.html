@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active = "upload" %}
 
-{% block title %}Upload — Oracle GL FBDI{% endblock %}
+{% block title %}Upload — Oracle Fusion FBDI{% endblock %}
 {% block topbar_title %}Manual Upload{% endblock %}
 
 {% block topbar_actions %}
@@ -10,78 +10,86 @@
 
 {% block content %}
 {% set err = request.query_params.get('err', '') %}
+{% set txn = request.query_params.get('txn', 'gl').lower() %}
 
-<div style="max-width:720px">
+<div style="max-width:760px">
 
   {% if err %}
   <div class="alert alert-error" style="margin-bottom:20px">&#10007; {{ err }}</div>
   {% endif %}
 
-  <form method="POST" action="/upload" enctype="multipart/form-data" id="upload-form">
+  <!-- GL / AP Tabs -->
+  <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #e8ecf0">
+    <a href="?txn=gl" id="tab-gl" style="padding:12px 24px;font-size:14px;font-weight:600;
+      text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
+      color:#6b7280">
+      &#128202; GL Journal
+    </a>
+    <a href="?txn=ap" id="tab-ap" style="padding:12px 24px;font-size:14px;font-weight:600;
+      text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
+      color:#6b7280">
+      &#128179; AP Invoice
+    </a>
+  </div>
 
-    <!-- Drop zone -->
+  <!-- ── GL form ──────────────────────────────────────────────────────────── -->
+  <form method="POST" action="/upload" enctype="multipart/form-data"
+        id="gl-form" data-txn="GL"
+        style="{% if txn != 'gl' %}display:none{% endif %}">
+    <input type="hidden" name="transaction_type" value="GL">
+
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <h2 class="card-title">&#128228; Select Journal File(s)</h2>
+        <h2 class="card-title">&#128228; GL Journal File(s)</h2>
         <span style="font-size:12px;color:#9ca3af">ZIP &middot; CSV &middot; TXT</span>
       </div>
       <div class="card-body">
-        <label id="drop-zone" for="file-input" style="
+        <label class="drop-zone-gl" for="gl-file-input" style="
           display:block;border:2px dashed #d1d5db;border-radius:10px;padding:40px 24px;
-          text-align:center;cursor:pointer;transition:all .2s;background:#fafafa">
-          <input type="file" name="files" id="file-input" multiple required
+          text-align:center;cursor:pointer;background:#fafafa">
+          <input type="file" name="files" id="gl-file-input" multiple required
                  accept=".zip,.csv,.txt" style="display:none">
           <div style="font-size:40px;margin-bottom:10px">&#128196;</div>
-          <div id="upload-label" style="font-size:15px;font-weight:600;color:#374151;margin-bottom:6px">
+          <div class="upload-label" style="font-size:15px;font-weight:600;color:#374151;margin-bottom:6px">
             Click to browse or drag &amp; drop
           </div>
           <div style="font-size:12px;color:#9ca3af">
-            Accepted: <strong>.zip</strong> &middot; <strong>.csv</strong> &middot; <strong>.txt</strong> &nbsp;&mdash;&nbsp; max 50 MB each &nbsp;&mdash;&nbsp; multiple files OK
+            Accepted: <strong>.zip</strong> &middot; <strong>.csv</strong> &middot; <strong>.txt</strong>
           </div>
         </label>
-
-        <!-- File list -->
-        <div id="file-list" style="margin-top:14px;display:none">
-          <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-            Selected Files
-          </div>
-          <div id="file-items" style="display:flex;flex-direction:column;gap:6px"></div>
+        <div class="file-list" style="margin-top:14px;display:none">
+          <div class="file-items" style="display:flex;flex-direction:column;gap:6px"></div>
         </div>
       </div>
     </div>
 
-    <!-- Parameters -->
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
         <h2 class="card-title">&#9881; Journal Parameters</h2>
-        <span style="font-size:12px;font-weight:400;color:#9ca3af">all optional — auto-detected if blank</span>
+        <span style="font-size:12px;font-weight:400;color:#9ca3af">all optional</span>
       </div>
       <div class="card-body">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label" for="ledger_name">Ledger Name</label>
-            <input type="text" class="form-control" id="ledger_name" name="ledger_name"
+            <label class="form-label">Ledger Name</label>
+            <input type="text" class="form-control" name="ledger_name"
                    placeholder="e.g. US Primary Ledger">
             <div class="form-hint">Defaults to Settings value</div>
           </div>
-
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label" for="accounting_date">Accounting Date</label>
-            <input type="date" class="form-control" id="accounting_date" name="accounting_date">
+            <label class="form-label">Accounting Date</label>
+            <input type="date" class="form-control" name="accounting_date">
             <div class="form-hint">Auto-detected from file if blank</div>
           </div>
-
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label" for="journal_name">Journal Name</label>
-            <input type="text" class="form-control" id="journal_name" name="journal_name"
+            <label class="form-label">Journal Name</label>
+            <input type="text" class="form-control" name="journal_name"
                    placeholder="e.g. May-26 GL Import">
             <div class="form-hint">Defaults to file name</div>
           </div>
-
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label" for="currency">Currency</label>
-            <select class="form-control" id="currency" name="currency">
+            <label class="form-label">Currency</label>
+            <select class="form-control" name="currency">
               <option value="USD" selected>USD — US Dollar</option>
               <option value="EUR">EUR — Euro</option>
               <option value="GBP">GBP — British Pound</option>
@@ -93,29 +101,137 @@
               <option value="JPY">JPY — Japanese Yen</option>
             </select>
           </div>
-
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label" for="period_name">Period Name</label>
-            <input type="text" class="form-control" id="period_name" name="period_name"
+            <label class="form-label">Period Name</label>
+            <input type="text" class="form-control" name="period_name"
                    placeholder="e.g. May-26">
             <div class="form-hint">Oracle format: Mon-YY</div>
           </div>
-
         </div>
       </div>
     </div>
 
-    <!-- Submit -->
     <div style="display:flex;gap:12px;align-items:center">
-      <button type="submit" class="btn btn-primary" id="submit-btn" style="padding:11px 28px;font-size:14px">
-        &#128228; Process &amp; Submit to Oracle
+      <button type="submit" class="btn btn-primary submit-btn" style="padding:11px 28px;font-size:14px">
+        &#128228; Process GL Journal
       </button>
       <a href="/" class="btn btn-secondary" style="padding:11px 20px">Cancel</a>
-      <span id="upload-status" style="font-size:13px;color:#6b7280;display:none;align-items:center;gap:8px">
+      <span class="upload-status" style="font-size:13px;color:#6b7280;display:none;align-items:center;gap:8px">
         <span class="spinner"></span> Uploading &amp; processing&hellip;
       </span>
     </div>
+  </form>
 
+  <!-- ── AP form ──────────────────────────────────────────────────────────── -->
+  <form method="POST" action="/upload" enctype="multipart/form-data"
+        id="ap-form" data-txn="AP"
+        style="{% if txn != 'ap' %}display:none{% endif %}">
+    <input type="hidden" name="transaction_type" value="AP">
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#128228; AP Invoice File(s)</h2>
+        <span style="font-size:12px;color:#9ca3af">ZIP &middot; CSV only</span>
+      </div>
+      <div class="card-body">
+        <label class="drop-zone-ap" for="ap-file-input" style="
+          display:block;border:2px dashed #d1d5db;border-radius:10px;padding:40px 24px;
+          text-align:center;cursor:pointer;background:#fafafa">
+          <input type="file" name="files" id="ap-file-input" multiple required
+                 accept=".zip,.csv" style="display:none">
+          <div style="font-size:40px;margin-bottom:10px">&#128179;</div>
+          <div class="upload-label" style="font-size:15px;font-weight:600;color:#374151;margin-bottom:6px">
+            Click to browse or drag &amp; drop
+          </div>
+          <div style="font-size:12px;color:#9ca3af">
+            Accepted: <strong>.zip</strong> (containing CSV) &middot; <strong>.csv</strong>
+          </div>
+        </label>
+        <div class="file-list" style="margin-top:14px;display:none">
+          <div class="file-items" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
+
+        <div class="alert alert-info mt-3" style="font-size:12.5px;margin-bottom:0">
+          <strong>AP ZIP format:</strong> can contain pre-built
+          <code>ApInvoicesInterface.csv</code> + <code>ApInvoiceLinesInterface.csv</code>
+          (multiple pairs allowed — each batch processed separately), or a single CSV with
+          one row per invoice line.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#9881; AP Parameters</h2>
+        <span style="font-size:12px;font-weight:400;color:#9ca3af">defaults from Settings → AP tab</span>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Business Unit Name</label>
+            <input type="text" class="form-control" name="ap_business_unit_name"
+                   value="{{ cfg.ap_business_unit_name or '' }}"
+                   placeholder="e.g. US1 Business Unit">
+            <div class="form-hint">Written into ApInvoicesInterface.csv column 2</div>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Business Unit ID <span style="color:#c0392b">*</span></label>
+            <input type="text" class="form-control" name="ap_business_unit_id"
+                   value="{{ cfg.ap_business_unit_id or '' }}"
+                   placeholder="e.g. 300000046987012">
+            <div class="form-hint">Numeric ID — required for submission</div>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Ledger ID <span style="color:#c0392b">*</span></label>
+            <input type="text" class="form-control" name="ap_ledger_id"
+                   value="{{ cfg.ap_ledger_id or '' }}"
+                   placeholder="e.g. 300000046975971">
+            <div class="form-hint">Numeric primary ledger ID</div>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Source</label>
+            <select class="form-control" name="ap_source">
+              <option value="External"        {% if cfg.ap_source == 'External' %}selected{% endif %}>External</option>
+              <option value="INVOICE GATEWAY" {% if cfg.ap_source == 'INVOICE GATEWAY' %}selected{% endif %}>INVOICE GATEWAY</option>
+              <option value="ERS"             {% if cfg.ap_source == 'ERS' %}selected{% endif %}>ERS</option>
+              <option value="SPREADSHEET"     {% if cfg.ap_source == 'SPREADSHEET' %}selected{% endif %}>SPREADSHEET</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Pay Group</label>
+            <input type="text" class="form-control" name="ap_pay_group"
+                   value="{{ cfg.ap_pay_group or '1000' }}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Invoice Group / Import Set</label>
+            <input type="text" class="form-control" name="ap_invoice_group"
+                   value="{{ cfg.ap_invoice_group or '' }}"
+                   placeholder="e.g. IN239_COE_IMP001">
+            <div class="form-hint">Auto-generated if blank</div>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Accounting Date</label>
+            <input type="date" class="form-control" name="accounting_date">
+            <div class="form-hint">Defaults to today</div>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Legal Entity</label>
+            <input type="text" class="form-control" name="legal_entity"
+                   placeholder="e.g. US1 Legal Entity">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;align-items:center">
+      <button type="submit" class="btn btn-primary submit-btn" style="padding:11px 28px;font-size:14px">
+        &#128228; Process AP Invoices
+      </button>
+      <a href="/" class="btn btn-secondary" style="padding:11px 20px">Cancel</a>
+      <span class="upload-status" style="font-size:13px;color:#6b7280;display:none;align-items:center;gap:8px">
+        <span class="spinner"></span> Uploading &amp; processing&hellip;
+      </span>
+    </div>
   </form>
 
   <!-- How it works -->
@@ -125,14 +241,23 @@
     </div>
     <div class="card-body" style="padding:16px 22px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 28px">
-        {% for n, title, hint in [
+        {% set gl_steps = [
           ('1','Parse','File read &amp; converted to records'),
           ('2','AI Column Mapping','Local ML maps columns to Oracle FBDI'),
           ('3','Validate','Debit/credit balance &amp; row checks'),
-          ('4','ZIP Validation','If ZIP — CSV inside is also validated'),
-          ('5','Generate FBDI','GlInterface.csv + .zip created'),
-          ('6','Submit &amp; Monitor','Posted to Oracle; ESS job tracked'),
+          ('4','Generate FBDI','GlInterface.csv + .zip created'),
+          ('5','Submit','Posted to JournalImportLauncher'),
+          ('6','Monitor','ESS job + Import Journals: Child tracked'),
         ] %}
+        {% set ap_steps = [
+          ('1','Parse','File read &amp; converted to records'),
+          ('2','AI Column Mapping','Local ML maps columns to AP fields'),
+          ('3','Pre-validate','Supplier, BU, amounts, distribution checks'),
+          ('4','Generate FBDI','ApInvoicesInterface.csv + Lines + .zip'),
+          ('5','Submit','Posted to APXIIMPT (Import Payables Invoices)'),
+          ('6','Monitor &amp; Report','ESS job tracked, Import Report PDF saved'),
+        ] %}
+        {% for n, title, hint in (ap_steps if txn=='ap' else gl_steps) %}
         <div style="display:flex;align-items:flex-start;gap:10px;padding:5px 0">
           <span style="background:#e8f0fe;color:#1a73e8;border-radius:50%;width:22px;height:22px;
             display:inline-flex;align-items:center;justify-content:center;font-size:11px;
@@ -152,82 +277,88 @@
 
 {% block extra_js %}
 <script>
-var zone  = document.getElementById('drop-zone');
-var input = document.getElementById('file-input');
-var label = document.getElementById('upload-label');
-var list  = document.getElementById('file-list');
-var items = document.getElementById('file-items');
+// ── Tabs ─────────────────────────────────────────────────────────────────
+(function(){
+  var txn = new URLSearchParams(location.search).get('txn') || 'gl';
+  txn = txn.toLowerCase();
+  var glTab = document.getElementById('tab-gl');
+  var apTab = document.getElementById('tab-ap');
+  function activate(tab) {
+    [glTab, apTab].forEach(function(t){
+      t.style.color = '#6b7280'; t.style.borderBottomColor = 'transparent';
+    });
+    tab.style.color = 'var(--oracle-red)';
+    tab.style.borderBottomColor = 'var(--oracle-red)';
+  }
+  activate(txn === 'ap' ? apTab : glTab);
+})();
 
-var ALLOWED = ['.zip', '.csv', '.txt'];
+// ── Drop-zone behavior for each form ─────────────────────────────────────
+function wireForm(formId, dropClass, inputId, allowedExts) {
+  var form = document.getElementById(formId);
+  if (!form) return;
+  var zone   = form.querySelector('.' + dropClass);
+  var input  = document.getElementById(inputId);
+  var label  = form.querySelector('.upload-label');
+  var list   = form.querySelector('.file-list');
+  var items  = form.querySelector('.file-items');
+  var btn    = form.querySelector('.submit-btn');
+  var status = form.querySelector('.upload-status');
 
-function extOf(name) { return name.slice(name.lastIndexOf('.')).toLowerCase(); }
-function fmtSize(b) {
-  return b > 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
-}
+  function extOf(name) { return name.slice(name.lastIndexOf('.')).toLowerCase(); }
+  function fmtSize(b) {
+    return b > 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
+  }
 
-function renderFiles(files) {
-  items.innerHTML = '';
-  var ok = 0;
-  Array.from(files).forEach(function(f) {
-    var ext  = extOf(f.name);
-    var good = ALLOWED.indexOf(ext) !== -1;
-    if (good) ok++;
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 12px;' +
-      'border-radius:7px;border:1px solid ' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
-      'background:' + (good ? '#f0faf2' : '#fff5f5');
-    row.innerHTML =
-      '<span style="font-size:16px">' + (good ? '&#128196;' : '&#9888;') + '</span>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + f.name + '</div>' +
-        '<div style="font-size:11px;color:#9ca3af">' + fmtSize(f.size) +
-          (good ? '' : ' &nbsp;&#8212;&nbsp; <span style="color:#dc2626">not allowed (use .zip .csv .txt)</span>') +
+  function render(files) {
+    items.innerHTML = '';
+    var ok = 0;
+    Array.from(files).forEach(function(f) {
+      var ext  = extOf(f.name);
+      var good = allowedExts.indexOf(ext) !== -1;
+      if (good) ok++;
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 12px;' +
+        'border-radius:7px;border:1px solid ' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
+        'background:' + (good ? '#f0faf2' : '#fff5f5');
+      row.innerHTML =
+        '<span style="font-size:16px">' + (good ? '&#128196;' : '&#9888;') + '</span>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + f.name + '</div>' +
+          '<div style="font-size:11px;color:#9ca3af">' + fmtSize(f.size) +
+            (good ? '' : ' &nbsp;&#8212;&nbsp; <span style="color:#dc2626">not allowed</span>') +
+          '</div>' +
         '</div>' +
-      '</div>' +
-      '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;' +
-        'background:' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
-        'color:' + (good ? '#155724' : '#721c24') + '">' + ext.toUpperCase() + '</span>';
-    items.appendChild(row);
-  });
+        '<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;' +
+          'background:' + (good ? '#c3e6cb' : '#f5c6cb') + ';' +
+          'color:' + (good ? '#155724' : '#721c24') + '">' + ext.toUpperCase() + '</span>';
+      items.appendChild(row);
+    });
+    list.style.display = 'block';
+    label.textContent  = ok + ' file' + (ok !== 1 ? 's' : '') + ' selected';
+    zone.style.borderColor = ok > 0 ? 'var(--oracle-red)' : '#f5c6cb';
+    zone.style.background  = ok > 0 ? '#fff8f7' : '#fff5f5';
+  }
 
-  list.style.display = 'block';
-  label.textContent = ok + ' file' + (ok !== 1 ? 's' : '') + ' selected';
-  zone.style.borderColor = ok > 0 ? 'var(--oracle-red)' : '#f5c6cb';
-  zone.style.background  = ok > 0 ? '#fff8f7' : '#fff5f5';
+  zone.addEventListener('dragover', function(e){ e.preventDefault(); zone.style.background='#fff8f7'; });
+  zone.addEventListener('dragleave', function(){ zone.style.background='#fafafa'; });
+  zone.addEventListener('drop', function(e){
+    e.preventDefault();
+    var dt = new DataTransfer();
+    Array.from(e.dataTransfer.files).forEach(function(f){ dt.items.add(f); });
+    input.files = dt.files;
+    render(input.files);
+  });
+  input.addEventListener('change', function(){ render(input.files); });
+
+  form.addEventListener('submit', function(){
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Uploading…';
+    if (status) status.style.display = 'inline-flex';
+  });
 }
 
-zone.addEventListener('dragover', function(e) {
-  e.preventDefault(); zone.style.borderColor = '#1a73e8'; zone.style.background = '#f0f7ff';
-});
-zone.addEventListener('dragleave', function() {
-  zone.style.borderColor = '#d1d5db'; zone.style.background = '#fafafa';
-});
-zone.addEventListener('drop', function(e) {
-  e.preventDefault();
-  zone.style.borderColor = '#d1d5db'; zone.style.background = '#fafafa';
-  var dt = new DataTransfer();
-  Array.from(e.dataTransfer.files).forEach(function(f) { dt.items.add(f); });
-  input.files = dt.files;
-  renderFiles(dt.files);
-});
-
-input.addEventListener('change', function() {
-  if (this.files.length) renderFiles(this.files);
-});
-
-document.getElementById('upload-form').addEventListener('submit', function(e) {
-  // Block if no valid files
-  var hasValid = false;
-  Array.from(input.files).forEach(function(f) {
-    if (ALLOWED.indexOf(extOf(f.name)) !== -1) hasValid = true;
-  });
-  if (!hasValid) { e.preventDefault(); return; }
-
-  var btn = document.getElementById('submit-btn');
-  var status = document.getElementById('upload-status');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Uploading…';
-  status.style.display = 'inline-flex';
-});
+wireForm('gl-form', 'drop-zone-gl', 'gl-file-input', ['.zip','.csv','.txt']);
+wireForm('ap-form', 'drop-zone-ap', 'ap-file-input', ['.zip','.csv']);
 </script>
 {% endblock %}

@@ -1,0 +1,3 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+INV-WEB-2026-001,1000,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,Consulting March wk1,2026-03-15
+INV-WEB-2026-001,1000,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,500,IN200 Standard Distribution,Consulting March wk2,2026-03-15

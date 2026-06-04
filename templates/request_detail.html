@@ -278,10 +278,25 @@
 
           {% if req.fbdi_zip_path %}
             <a href="/download/{{ req.id }}/zip" class="btn btn-success" style="width:100%;text-align:left">
-              &#128230; GlInterface.zip (FBDI)
+              &#128230; {% if req.transaction_type == 'AP' %}ApInvoicesImport.zip{% else %}GlInterface.zip{% endif %} (FBDI)
             </a>
           {% endif %}
-          {% if req.fbdi_csv_path %}
+          {% if req.transaction_type == 'AP' %}
+            <a href="/download/{{ req.id }}/ap_hdr_csv" class="btn btn-outline" style="width:100%;text-align:left">
+              &#128196; ApInvoicesInterface.csv (headers)
+            </a>
+            <a href="/download/{{ req.id }}/ap_line_csv" class="btn btn-outline" style="width:100%;text-align:left">
+              &#128196; ApInvoiceLinesInterface.csv (lines)
+            </a>
+            <a href="/request/{{ req.id }}/ap-report" target="_blank"
+               class="btn btn-outline" style="width:100%;text-align:left;color:#1a73e8;border-color:#b8d4f8">
+              &#128221; View AP Import Report (browser)
+            </a>
+            <a href="/download/{{ req.id }}/ap_report_pdf" class="btn btn-outline"
+               style="width:100%;text-align:left">
+              &#128229; Download AP Report PDF
+            </a>
+          {% elif req.fbdi_csv_path %}
             <a href="/download/{{ req.id }}/csv" class="btn btn-outline" style="width:100%;text-align:left">
               &#128196; GlInterface.csv
             </a>

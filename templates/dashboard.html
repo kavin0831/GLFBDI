@@ -11,10 +11,27 @@
   {% else %}
     <a href="/gmail-setup" class="badge badge-failed" style="text-decoration:none">&#9679; Gmail Not Connected</a>
   {% endif %}
-  <a href="/upload" class="btn btn-primary btn-sm">&#43; Manual Upload</a>
+  <a href="/upload?txn={{ (txn or 'GL')|lower }}" class="btn btn-primary btn-sm">&#43; Manual Upload</a>
 {% endblock %}
 
 {% block content %}
+{% set txn_active = txn or 'GL' %}
+
+<!-- GL / AP Tabs -->
+<div style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #e8ecf0">
+  <a href="/?txn=gl" style="padding:12px 24px;font-size:14px;font-weight:600;
+    text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
+    color:{% if txn_active == 'GL' %}var(--oracle-red){% else %}#6b7280{% endif %};
+    border-bottom-color:{% if txn_active == 'GL' %}var(--oracle-red){% else %}transparent{% endif %}">
+    &#128202; GL Journal Requests
+  </a>
+  <a href="/?txn=ap" style="padding:12px 24px;font-size:14px;font-weight:600;
+    text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
+    color:{% if txn_active == 'AP' %}var(--oracle-red){% else %}#6b7280{% endif %};
+    border-bottom-color:{% if txn_active == 'AP' %}var(--oracle-red){% else %}transparent{% endif %}">
+    &#128179; AP Invoice Requests
+  </a>
+</div>
 
 <!-- Stats row -->
 <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">

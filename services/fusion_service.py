@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -134,6 +135,136 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -
     data = resp.json()
     logger.info("Submission response: ReqstId=%s", data.get("ReqstId"))
     return data
+
+
+# ── AP Invoice FBDI Submission ────────────────────────────────────────────────
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=4, max=30),
+       retry=retry_if_exception_type(httpx.TransportError))
+def submit_ap_fbdi(
+    cfg,
+    zip_path: str,
+    invoice_group: str = "",
+    accounting_date: str = "",
+    business_unit_id: str = "",
+    ledger_id: str = "",
+    source: str = "External",
+    pay_group: str = "1000",
+) -> dict:
+    """
+    POST ApInvoicesImport.zip to Oracle's importBulkData operation, targeting
+    the APXIIMPT (Import Payables Invoices) job.
+
+    ParameterList layout — discovered from the user's APIMPORT.properties
+    sample and confirmed live (ReqstId 9737430 SUCCEEDED 2026-06-04):
+
+      arg1  empty
+      arg2  Business Unit ID (numeric)
+      arg3  N
+      arg4  Accounting Date (YYYY-MM-DD)
+      arg5  empty
+      arg6  empty
+      arg7  Pay Group (1000 = default)
+      arg8  Source (External / INVOICE GATEWAY / etc.)
+      arg9  Invoice Group / Import Set token
+      arg10 N
+      arg11 N
+      arg12 Ledger ID (numeric)
+      arg13 empty
+      arg14 1  (InterfaceDetails)
+    """
+    bu_id  = (business_unit_id or cfg.ap_business_unit_id or "").strip()
+    led_id = (ledger_id or cfg.ap_ledger_id or "").strip()
+    if not bu_id or not led_id:
+        raise ValueError("submit_ap_fbdi: ap_business_unit_id and ap_ledger_id "
+                         "must be configured in /settings before submitting AP invoices.")
+
+    src       = (source    or cfg.ap_source    or "External").strip()
+    pay_grp   = (pay_group or cfg.ap_pay_group or "1000").strip()
+    inv_grp   = (invoice_group or cfg.ap_invoice_group or f"AP_BATCH_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}").strip() if False else (invoice_group or "").strip()
+    if not inv_grp:
+        inv_grp = "AP_BATCH"
+    acct_date = (accounting_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")).strip()
+
+    param_list = (
+        f"#NULL,{bu_id},N,{acct_date},#NULL,#NULL,{pay_grp},"
+        f"{src},{inv_grp},N,N,{led_id},#NULL,1"
+    )
+
+    zip_bytes = Path(zip_path).read_bytes()
+    b64 = base64.b64encode(zip_bytes).decode("utf-8")
+
+    payload = {
+        "OperationName":   "importBulkData",
+        "DocumentContent": b64,
+        "ContentType":     "zip",
+        "FileName":        "ApInvoicesImport.zip",
+        "DocumentAccount": cfg.ap_document_account or "fin$/payables$/import$",
+        "JobName":         cfg.ap_job_name or "oracle/apps/ess/financials/payables/invoices/transactions,APXIIMPT",
+        "ParameterList":   param_list,
+        "CallbackURL":     "#NULL",
+        "NotificationCode":"10",
+        "JobOptions":      "InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL",
+    }
+
+    url = f"{_base(cfg)}{ERPI}"
+    logger.info("Submitting AP FBDI to Oracle Fusion: %s (%.1f KB)  group=%s",
+                url, len(zip_bytes)/1024, inv_grp)
+    logger.info("AP ParameterList: %s", param_list)
+
+    resp = httpx.post(url, json=payload, auth=_auth(cfg), timeout=120,
+                      headers={"Content-Type": "application/json", "Accept": "application/json"})
+    resp.raise_for_status()
+    data = resp.json()
+    logger.info("AP submission response: ReqstId=%s", data.get("ReqstId"))
+    return data
+
+
+# ── AP-specific JI lookup (Import Payables Invoices = the equivalent of GL's
+#    Import Journals: Child for AP). Same forward-scan pattern. ───────────────
+
+def find_ap_import_jobs(cfg, after_request_id: str, scan_range: int = 30,
+                        invoice_group: str = "", max_workers: int = 10) -> list[dict]:
+    """
+    importBulkData returns the file-loader request ID; the actual
+    "Import Payables Invoices" and "Import Payables Invoices Report" run as
+    separate ESS requests with higher IDs. This function scans the next
+    `scan_range` IDs and returns any that are part of the AP import chain.
+
+    Detection matches job names:
+      - "Import Payables Invoices"
+      - "Import Payables Invoices Report"
+      - "APXIIMPT"
+
+    Returns list of {request_id, name, status, scanned_from}.
+    """
+    try:
+        start = int(after_request_id)
+    except (ValueError, TypeError):
+        return []
+    found: list[dict] = []
+    for rid in range(start + 1, start + scan_range + 1):
+        try:
+            det = get_execution_details(cfg, str(rid))
+            for j in det.get("child_jobs", []):
+                name = (j.get("name") or "").strip()
+                if ("Import Payables Invoices" in name
+                        or "APXIIMPT" in name
+                        or "Payables Invoices Report" in name):
+                    found.append({
+                        "request_id": j.get("request_id") or str(rid),
+                        "name":       name,
+                        "status":     j.get("status") or "",
+                        "scanned_from": str(rid),
+                    })
+        except Exception:
+            continue
+    # Dedupe
+    seen = set(); out = []
+    for j in found:
+        if j["request_id"] not in seen:
+            seen.add(j["request_id"]); out.append(j)
+    return out
 
 
 # ── ESS Status ────────────────────────────────────────────────────────────────

@@ -20,6 +20,22 @@
 
 <form method="POST" action="/settings/save" id="settings-form">
 
+  <!-- Settings tabs -->
+  <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #e8ecf0">
+    <button type="button" class="settings-tab" data-tab="fusion"
+      style="padding:12px 24px;font-size:14px;font-weight:600;background:none;border:none;cursor:pointer;
+      border-bottom:3px solid var(--oracle-red);margin-bottom:-2px;color:var(--oracle-red)">
+      &#9729; Fusion &amp; Gmail
+    </button>
+    <button type="button" class="settings-tab" data-tab="txntype"
+      style="padding:12px 24px;font-size:14px;font-weight:600;background:none;border:none;cursor:pointer;
+      border-bottom:3px solid transparent;margin-bottom:-2px;color:#6b7280">
+      &#128202; Transaction Type Config
+    </button>
+  </div>
+
+  <!-- ─── Tab 1: Fusion + Gmail (existing) ──────────────────────── -->
+  <div id="tab-fusion" class="settings-tab-pane">
   <div class="settings-grid">
 
     <!-- Oracle Fusion -->
@@ -152,14 +168,163 @@
     </div>
 
   </div>
+  </div><!-- /tab-fusion -->
+
+  <!-- ─── Tab 2: Transaction Type Config (GL / AP) ────────────── -->
+  <div id="tab-txntype" class="settings-tab-pane" style="display:none">
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#128202; Transaction Type</h2>
+      </div>
+      <div class="card-body">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Choose configuration to edit</label>
+          <select id="txn-type-select" class="form-control" style="max-width:280px">
+            <option value="GL">GL — General Ledger Journal</option>
+            <option value="AP">AP — Payables Invoice</option>
+          </select>
+          <div class="form-hint">Settings below switch based on this choice.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GL config -->
+    <div id="txn-gl" class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">&#128202; GL Journal Import Configuration</h2>
+        <span class="badge badge-success">Active</span>
+      </div>
+      <div class="card-body">
+        <div class="alert alert-info" style="font-size:13px">
+          GL fields are already set in the <strong>Fusion &amp; Gmail</strong> tab.
+          Document Account: <code>{{ cfg.fusion_document_account }}</code><br>
+          Job Name: <code style="word-break:break-all">{{ cfg.fusion_job_name }}</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- AP config -->
+    <div id="txn-ap" class="card" style="margin-bottom:20px;display:none">
+      <div class="card-header">
+        <h2 class="card-title">&#128179; AP Invoice Import Configuration</h2>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Document Account <span class="required">*</span></label>
+            <input type="text" class="form-control" name="ap_document_account"
+                   value="{{ cfg.ap_document_account or 'fin$/payables$/import$' }}">
+            <div class="form-hint">UCM account: <code>fin$/payables$/import$</code></div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">ESS Job Name <span class="required">*</span></label>
+            <input type="text" class="form-control" name="ap_job_name"
+                   value="{{ cfg.ap_job_name or '' }}"
+                   placeholder="oracle/apps/ess/financials/payables/invoices/transactions,APXIIMPT">
+            <div class="form-hint">Import Payables Invoices job</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Business Unit ID <span class="required">*</span></label>
+            <input type="text" class="form-control" name="ap_business_unit_id"
+                   value="{{ cfg.ap_business_unit_id or '' }}"
+                   placeholder="300000046987012">
+            <div class="form-hint">Numeric ID (Oracle queries by this)</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Business Unit Name</label>
+            <input type="text" class="form-control" name="ap_business_unit_name"
+                   value="{{ cfg.ap_business_unit_name or '' }}"
+                   placeholder="US1 Business Unit">
+            <div class="form-hint">Written into ApInvoicesInterface.csv</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Ledger ID <span class="required">*</span></label>
+            <input type="text" class="form-control" name="ap_ledger_id"
+                   value="{{ cfg.ap_ledger_id or '' }}"
+                   placeholder="300000046975971">
+            <div class="form-hint">Numeric primary ledger ID</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Default Source</label>
+            <select class="form-control" name="ap_source">
+              <option value="External"        {% if cfg.ap_source == 'External' %}selected{% endif %}>External</option>
+              <option value="INVOICE GATEWAY" {% if cfg.ap_source == 'INVOICE GATEWAY' %}selected{% endif %}>INVOICE GATEWAY</option>
+              <option value="ERS"             {% if cfg.ap_source == 'ERS' %}selected{% endif %}>ERS</option>
+              <option value="SPREADSHEET"     {% if cfg.ap_source == 'SPREADSHEET' %}selected{% endif %}>SPREADSHEET</option>
+            </select>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Default Pay Group</label>
+            <input type="text" class="form-control" name="ap_pay_group"
+                   value="{{ cfg.ap_pay_group or '1000' }}">
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Default Invoice Group / Import Set</label>
+            <input type="text" class="form-control" name="ap_invoice_group"
+                   value="{{ cfg.ap_invoice_group or '' }}"
+                   placeholder="IN239_COE_IMP001">
+            <div class="form-hint">Auto-generated per request if blank</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Gmail Subject Filter (AP)</label>
+            <input type="text" class="form-control" name="gmail_subject_filter_ap"
+                   value="{{ cfg.gmail_subject_filter_ap or 'invoice upload' }}">
+            <div class="form-hint">Inbound emails matching this filter route to AP</div>
+          </div>
+
+        </div>
+
+        <div class="alert alert-info mt-3" style="font-size:13px">
+          <strong>How AP submission works:</strong> the AP ParameterList becomes
+          <br><code style="font-size:11.5px;display:inline-block;background:#f0f2f5;padding:4px 8px;border-radius:4px;margin-top:6px;word-break:break-all">#NULL,{BU_ID},N,{date},#NULL,#NULL,{pay_group},{source},{invoice_group},N,N,{ledger_id},#NULL,1</code>
+          <br>posted to the <strong>APXIIMPT</strong> job. Sample data + workflow are
+          identical to GL except for the FBDI format and ParameterList structure.
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-txntype -->
 
   <!-- Save button -->
   <div style="margin-top:24px;display:flex;gap:12px">
-    <button type="submit" class="btn btn-primary">&#128190; Save Settings</button>
+    <button type="submit" class="btn btn-primary">&#128190; Save All Settings</button>
     <a href="/" class="btn btn-secondary">Cancel</a>
   </div>
 
 </form>
+
+<script>
+// Tab switching
+document.querySelectorAll('.settings-tab').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var target = btn.dataset.tab;
+    document.querySelectorAll('.settings-tab').forEach(function(b){
+      b.style.color = '#6b7280'; b.style.borderBottomColor = 'transparent';
+    });
+    btn.style.color = 'var(--oracle-red)';
+    btn.style.borderBottomColor = 'var(--oracle-red)';
+    document.querySelectorAll('.settings-tab-pane').forEach(function(p){
+      p.style.display = (p.id === 'tab-' + target) ? 'block' : 'none';
+    });
+  });
+});
+// GL/AP sub-selector
+document.getElementById('txn-type-select').addEventListener('change', function(e){
+  var v = e.target.value;
+  document.getElementById('txn-gl').style.display = (v === 'GL') ? 'block' : 'none';
+  document.getElementById('txn-ap').style.display = (v === 'AP') ? 'block' : 'none';
+});
+</script>
 
 {% endblock %}
 
