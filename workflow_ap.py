@@ -256,6 +256,7 @@ def _stage_submit(req_id: str, zip_path: Path, meta: dict) -> str | None:
             invoice_group=meta.get("ap_invoice_group") or f"BATCH_{req_id[:8]}",
             accounting_date=meta.get("accounting_date") or
                              datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            business_unit_name=meta.get("ap_business_unit_name") or cfg.ap_business_unit_name,
             business_unit_id=meta.get("ap_business_unit_id") or cfg.ap_business_unit_id,
             ledger_id=meta.get("ap_ledger_id") or cfg.ap_ledger_id,
             source=meta.get("ap_source") or cfg.ap_source,
@@ -436,12 +437,11 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
                               pairs: list[tuple[bytes, bytes]]) -> None:
     """If user uploaded a pre-built AP FBDI ZIP, submit each invoice batch."""
     cfg = get_settings()
-    if not cfg.ap_business_unit_id or not cfg.ap_ledger_id:
-        _db_update(request_id, status="FAILED",
-                   current_stage="MISSING_CONFIG",
-                   stop_reason="AP Business Unit ID and Ledger ID must be set "
-                               "in /settings → AP tab before importing.")
-        return
+    _db_update(request_id, status="PROCESSING", current_stage="SUBMITTING",
+               ap_business_unit_name=cfg.ap_business_unit_name,
+               ap_invoice_group=cfg.ap_invoice_group,
+               ap_source=cfg.ap_source)
+    _log(request_id, "INFO", f"Pre-built AP FBDI: {len(pairs)} batch(es) to submit")
 
     # If multiple pairs, submit them sequentially with the same overall request.
     eids: list[str] = []
@@ -452,11 +452,25 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
         ln_csv  = out_dir / "ApInvoiceLinesInterface.csv"
         hdr_csv.write_bytes(hdr_b); ln_csv.write_bytes(line_b)
         zp = package_ap_zip(hdr_csv, ln_csv, out_dir)
-        store_generated_file(request_id, f"fbdi_zip_v{i}",
+        # First batch lives under the canonical fbdi_zip_v0 key so downloads work
+        store_key = "fbdi_zip_v0" if i == 0 else f"fbdi_zip_v{i}"
+        store_generated_file(request_id, store_key,
                               "ApInvoicesImport.zip", zp.read_bytes())
-        resp = submit_ap_fbdi(cfg, str(zp),
-                               invoice_group=f"BATCH_{request_id[:8]}_p{i}",
-                               accounting_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        # Also persist the split CSVs for audit
+        store_generated_file(request_id, "ap_hdr_csv_v0"  if i == 0 else f"ap_hdr_csv_v{i}",
+                              "ApInvoicesInterface.csv", hdr_b)
+        store_generated_file(request_id, "ap_line_csv_v0" if i == 0 else f"ap_line_csv_v{i}",
+                              "ApInvoiceLinesInterface.csv", line_b)
+        try:
+            resp = submit_ap_fbdi(
+                cfg, str(zp),
+                invoice_group=(cfg.ap_invoice_group or f"BATCH_{request_id[:8]}_p{i}"),
+                accounting_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                business_unit_name=cfg.ap_business_unit_name,
+            )
+        except Exception as e:
+            _log(request_id, "ERROR", f"Pair {i} submit failed: {e}")
+            continue
         eid = str(resp.get("ReqstId") or "")
         if eid and eid != "-1":
             eids.append(eid)
@@ -468,32 +482,74 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
         _db_update(request_id, status="FAILED",
                    current_stage="SUBMIT_REJECTED",
                    stop_reason="All pre-built ZIPs were rejected.")
+        _send_ap_email(request_id, "failure", [], "All pre-built ZIPs rejected by Oracle")
         return
 
+    # Use the FIRST batch as the primary fusion_request_id; record extras
     _db_update(request_id, fusion_request_id=eids[0],
-               ap_extra_request_ids=eids[1:])
+               ap_extra_request_ids=eids[1:],
+               fbdi_zip_path=str(STORAGE / "fbdi" / f"{request_id}-pair-0" / "ApInvoicesImport.zip"))
+
     final = _stage_monitor(request_id, eids[0])
-    # Fetch AP jobs spawned by the FIRST submission (others follow similar)
+
+    # Discover downstream "Import Payables Invoices" requests + fetch logs
+    _log(request_id, "INFO", "Waiting 30s for AP downstream jobs to spawn…")
     time.sleep(30)
-    ap_jobs = find_ap_import_jobs(get_settings(), eids[0], scan_range=30)
-    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED") for j in ap_jobs)
+    all_ap_jobs: list[dict] = []
+    for eid in eids:
+        all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=30))
+    for j in all_ap_jobs:
+        _log(request_id, "INFO",
+             f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
+
+    # Download ESS logs (parent + AP children)
+    try:
+        logs = download_ess_logs(get_settings(), eids[0])
+        zb = logs.get("zip_bytes")
+        if zb:
+            log_dir = STORAGE / "logs" / request_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_zip = log_dir / f"ess_logs_{eids[0]}.zip"
+            log_zip.write_bytes(zb)
+            store_generated_file(request_id, "ess_log_v0", log_zip.name, zb)
+            _db_update(request_id, ess_log_path=str(log_zip))
+            _log(request_id, "INFO", f"Downloaded {len(zb)} bytes of ESS logs")
+    except Exception as e:
+        _log(request_id, "WARN", f"Log download failed: {e}")
+
+    # Render Import Payables Invoices Report (BIP XML → HTML+PDF)
+    try:
+        _save_ap_report_pdf(request_id, all_ap_jobs)
+    except Exception as e:
+        _log(request_id, "WARN", f"Report rendering failed: {e}")
+
+    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
+                       for j in all_ap_jobs)
 
     if final in ("SUCCEEDED","WARNING") and not inner_failed:
         _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
-        _send_ap_email(request_id, "success", ap_jobs)
+        _log(request_id, "INFO", "Pre-built AP import completed successfully")
+        _send_ap_email(request_id, "success", all_ap_jobs)
     else:
+        reason = (f"AP child job(s) reported issues: " +
+                  ", ".join(f"{j['name']}={j['status']}" for j in all_ap_jobs)
+                  if inner_failed else
+                  f"ESS request ended with status: {final}")
         _db_update(request_id, status="FAILED",
-                   current_stage="IMPORT_ERRORS",
-                   stop_reason=f"Pre-built ZIP import: final={final}, ap_jobs={ap_jobs}")
-        _send_ap_email(request_id, "failure", ap_jobs)
+                   current_stage="IMPORT_ERRORS" if inner_failed else "ESS_FAILED",
+                   stop_reason=reason)
+        _send_ap_email(request_id, "failure", all_ap_jobs, reason)
 
 
 # ── Save AP Report PDF (Import Payables Invoices Report output) ─────────────
 
 def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
     """
-    If the 'Import Payables Invoices Report' job's logs contain a PDF, persist it
-    to MongoDB so the UI can view/download it.
+    Persist the AP Import Report. Oracle returns BI Publisher XML (not PDF) via
+    REST — we save:
+      - ap_report_pdf: a PDF rendered locally from the BIP XML (via reportlab)
+      - ap_report_xml: the raw BIP data XML
+      - ap_report_html: human-readable HTML for inline viewing
     """
     for j in ap_jobs:
         if "Report" not in (j.get("name") or ""): continue
@@ -504,21 +560,177 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
             zb = logs.get("zip_bytes")
             if not zb: continue
             import io
+            xml_content = b""
             with _zipfile.ZipFile(io.BytesIO(zb)) as zf:
                 for name in zf.namelist():
                     n_lower = name.lower()
-                    if n_lower.endswith(".pdf") or n_lower.endswith(".out"):
-                        content = zf.read(name)
-                        # Skip empty / placeholder outputs
-                        if len(content) < 200: continue
-                        kind = "ap_report_pdf" if n_lower.endswith(".pdf") else "ap_report_txt"
-                        store_generated_file(request_id, kind,
-                                              Path(name).name, content)
-                        _log(request_id, "INFO",
-                             f"Saved AP Import Report: {name} ({len(content)} bytes)")
+                    if n_lower.endswith(".pdf") and len(zf.read(name)) > 200:
+                        # If Oracle ever does return a real PDF, prefer it
+                        store_generated_file(request_id, "ap_report_pdf",
+                                              Path(name).name, zf.read(name))
+                        _log(request_id, "INFO", f"Saved native AP PDF: {name}")
                         return
+                    if n_lower.endswith(".xml") and b"<APXIIMPT" in zf.read(name)[:2000]:
+                        xml_content = zf.read(name)
+
+            if not xml_content: return
+            store_generated_file(request_id, "ap_report_xml",
+                                  f"ap_report_{rid}.xml", xml_content)
+
+            # Build a friendly HTML + a PDF from the XML data
+            html, pdf = _render_ap_report_from_bip_xml(xml_content, request_id, rid)
+            if html:
+                store_generated_file(request_id, "ap_report_html",
+                                      f"ap_report_{rid}.html", html.encode("utf-8"))
+            if pdf:
+                store_generated_file(request_id, "ap_report_pdf",
+                                      f"ap_report_{rid}.pdf", pdf)
+            _log(request_id, "INFO",
+                 f"Saved AP Import Report (XML+HTML+PDF) from request {rid}")
+            return
         except Exception as e:
             logger.warning("AP report extraction failed for %s: %s", rid, e)
+
+
+def _render_ap_report_from_bip_xml(xml_bytes: bytes, request_id: str,
+                                     report_rid: str) -> tuple[str, bytes]:
+    """Parse Oracle's BI Publisher data XML for APXIIMPT and render readable HTML+PDF."""
+    try:
+        from xml.etree import ElementTree as ET
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return "", b""
+
+    def t(tag):
+        el = root.find(f".//{tag}")
+        return (el.text or "").strip() if el is not None and el.text else ""
+
+    fetched  = t("G_INVOICES_FETCHED") or t("C_INVOICES_FETCHED") or "0"
+    created  = t("G_INVOICES_CREATED") or t("C_INVOICES_CREATED") or "0"
+    rejected = t("C_INVOICES_REJECTED") or "0"
+    total    = t("C_TOTAL_INVOICE_AMOUNT") or ""
+    err_flag = t("C_ERROR_FLAG") or "N"
+    err_msg  = t("C_ERROR_MESSAGE") or ""
+    company  = t("C_COMPANY_NAME_HEADER") or ""
+    bu_name  = t("BUSINESS_UNIT_NAME") or ""
+    source   = t("C_SOURCE") or ""
+    group_id = t("P_GROUP_ID") or ""
+    acct_d   = t("P_ACCOUNTING_DATE") or ""
+
+    # Collect any rejection / audit detail elements
+    rejections: list[dict] = []
+    for r in root.findall(".//LIST_G_BUSINESS_UNIT_REJECTION/G_BUSINESS_UNIT_REJECTION"):
+        rejections.append({c.tag: (c.text or "") for c in r})
+    for r in root.findall(".//LIST_G_BU_REJECTION/G_BU_REJECTION"):
+        rejections.append({c.tag: (c.text or "") for c in r})
+
+    # ── HTML ──────────────────────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>AP Import Report — {request_id[:8]}</title>
+<style>
+  body {{ font-family:'Segoe UI',sans-serif; max-width:880px; margin:24px auto; color:#222 }}
+  h1 {{ color:#c74634; margin:0 0 4px }}
+  .sub {{ color:#6b7280; font-size:13px; margin-bottom:24px }}
+  table {{ width:100%; border-collapse:collapse; margin-bottom:18px; font-size:13.5px }}
+  th, td {{ padding:8px 12px; border:1px solid #ddd; text-align:left }}
+  th {{ background:#f5f5f5; font-weight:600 }}
+  .ok {{ color:#1e7e34 }} .bad {{ color:#c0392b }}
+  .stat {{ display:inline-block; padding:10px 18px; margin-right:10px; border-radius:8px;
+           background:#f0f2f5; font-size:14px }}
+  .stat strong {{ font-size:20px; display:block; color:#222 }}
+</style></head><body>
+<h1>📑 Import Payables Invoices Report</h1>
+<div class="sub">Generated from Oracle BI Publisher data model — Request {report_rid}</div>
+
+<div style="margin-bottom:20px">
+  <span class="stat">Invoices Fetched <strong>{fetched}</strong></span>
+  <span class="stat" style="background:{'#e6f4ea' if int(created or 0) > 0 else '#f0f2f5'}">
+    Invoices Created <strong class="{'ok' if int(created or 0) > 0 else ''}">{created}</strong>
+  </span>
+  <span class="stat" style="background:{'#fce8e6' if int(rejected or 0) > 0 else '#f0f2f5'}">
+    Invoices Rejected <strong class="{'bad' if int(rejected or 0) > 0 else ''}">{rejected}</strong>
+  </span>
+</div>
+
+<table>
+  <tr><th>Ledger</th><td>{company}</td>
+      <th>Business Unit</th><td>{bu_name}</td></tr>
+  <tr><th>Source</th><td>{source}</td>
+      <th>Invoice Group</th><td>{group_id}</td></tr>
+  <tr><th>Accounting Date</th><td>{acct_d}</td>
+      <th>Total Invoice Amount</th><td>{total or '—'}</td></tr>
+  <tr><th>Error Flag</th><td class="{'bad' if err_flag == 'Y' else 'ok'}">{err_flag}</td>
+      <th>Error Message</th><td>{err_msg}</td></tr>
+</table>
+"""
+    if rejections:
+        html += "<h3>Rejections</h3><table><tr>"
+        keys = list(rejections[0].keys())
+        for k in keys: html += f"<th>{k}</th>"
+        html += "</tr>"
+        for r in rejections:
+            html += "<tr>" + "".join(f"<td>{r.get(k,'')}</td>" for k in keys) + "</tr>"
+        html += "</table>"
+    html += "</body></html>"
+
+    # ── PDF (reportlab) ───────────────────────────────────────────────────
+    pdf_bytes = b""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib import colors
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Table,
+                                          TableStyle, Spacer)
+        from reportlab.lib.styles import getSampleStyleSheet
+        import io as _io
+        buf = _io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=letter, title="AP Import Report")
+        ss = getSampleStyleSheet()
+        story = [
+            Paragraph("<b>Import Payables Invoices Report</b>", ss["Title"]),
+            Paragraph(f"Request {report_rid} &nbsp;·&nbsp; {company}", ss["Normal"]),
+            Spacer(1, 14),
+            Table([["Invoices Fetched", "Invoices Created", "Invoices Rejected"],
+                   [fetched, created, rejected]],
+                  colWidths=[160, 160, 160],
+                  style=TableStyle([
+                      ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f5f5f5")),
+                      ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+                      ("FONTSIZE", (0,0), (-1,-1), 11),
+                      ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                      ("FONTNAME", (0,1), (-1,1), "Helvetica-Bold"),
+                      ("TEXTCOLOR", (1,1), (1,1), colors.HexColor("#1e8e3e") if int(created or 0) > 0 else colors.black),
+                      ("TEXTCOLOR", (2,1), (2,1), colors.HexColor("#c0392b") if int(rejected or 0) > 0 else colors.black),
+                  ])),
+            Spacer(1, 18),
+            Table([
+                ["Ledger", company, "Business Unit", bu_name],
+                ["Source", source, "Invoice Group", group_id],
+                ["Accounting Date", acct_d, "Total Invoice Amount", total or "—"],
+                ["Error Flag", err_flag, "Error Message", err_msg or "—"],
+            ],
+                  colWidths=[110, 170, 110, 170],
+                  style=TableStyle([
+                      ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+                      ("FONTSIZE", (0,0), (-1,-1), 9),
+                      ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#f5f5f5")),
+                      ("BACKGROUND", (2,0), (2,-1), colors.HexColor("#f5f5f5")),
+                  ])),
+        ]
+        if rejections:
+            story += [Spacer(1, 16), Paragraph("<b>Rejections</b>", ss["Heading3"])]
+            keys = list(rejections[0].keys())
+            rows = [keys] + [[r.get(k, "") for k in keys] for r in rejections]
+            story.append(Table(rows, style=TableStyle([
+                ("GRID", (0,0), (-1,-1), 0.4, colors.grey),
+                ("FONTSIZE", (0,0), (-1,-1), 8),
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f5f5f5")),
+            ])))
+        doc.build(story)
+        pdf_bytes = buf.getvalue()
+    except Exception as e:
+        logger.warning("PDF render failed: %s", e)
+
+    return html, pdf_bytes
 
 
 # ── Email ────────────────────────────────────────────────────────────────────

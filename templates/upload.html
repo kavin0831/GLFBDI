@@ -163,30 +163,16 @@
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
         <h2 class="card-title">&#9881; AP Parameters</h2>
-        <span style="font-size:12px;font-weight:400;color:#9ca3af">defaults from Settings → AP tab</span>
+        <span style="font-size:12px;font-weight:400;color:#9ca3af">defaults from Settings → Transaction Type → AP</span>
       </div>
       <div class="card-body">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Business Unit Name</label>
+            <label class="form-label">Business Unit</label>
             <input type="text" class="form-control" name="ap_business_unit_name"
                    value="{{ cfg.ap_business_unit_name or '' }}"
                    placeholder="e.g. US1 Business Unit">
-            <div class="form-hint">Written into ApInvoicesInterface.csv column 2</div>
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Business Unit ID <span style="color:#c0392b">*</span></label>
-            <input type="text" class="form-control" name="ap_business_unit_id"
-                   value="{{ cfg.ap_business_unit_id or '' }}"
-                   placeholder="e.g. 300000046987012">
-            <div class="form-hint">Numeric ID — required for submission</div>
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Ledger ID <span style="color:#c0392b">*</span></label>
-            <input type="text" class="form-control" name="ap_ledger_id"
-                   value="{{ cfg.ap_ledger_id or '' }}"
-                   placeholder="e.g. 300000046975971">
-            <div class="form-hint">Numeric primary ledger ID</div>
+            <div class="form-hint">BU name — Ledger ID + Legal Entity resolved automatically via Oracle REST</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label class="form-label">Source</label>
@@ -207,18 +193,25 @@
             <input type="text" class="form-control" name="ap_invoice_group"
                    value="{{ cfg.ap_invoice_group or '' }}"
                    placeholder="e.g. IN239_COE_IMP001">
-            <div class="form-hint">Auto-generated if blank</div>
+            <div class="form-hint">Auto-generated per request if blank</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label class="form-label">Accounting Date</label>
             <input type="date" class="form-control" name="accounting_date">
-            <div class="form-hint">Defaults to today</div>
+            <div class="form-hint">Defaults to today if blank</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Legal Entity</label>
+            <label class="form-label">Legal Entity (optional override)</label>
             <input type="text" class="form-control" name="legal_entity"
-                   placeholder="e.g. US1 Legal Entity">
+                   placeholder="auto-resolved from Business Unit if blank">
           </div>
+        </div>
+
+        <div class="alert alert-info mt-3" style="font-size:13px;margin-bottom:0">
+          <strong>Multi-file uploads:</strong> if you upload
+          <code>ApInvoicesInterface.csv</code> + <code>ApInvoiceLinesInterface.csv</code>
+          as separate files, the app will pair them automatically into a single
+          submission. Upload 4 CSVs (2 pairs) and you get 2 submissions.
         </div>
       </div>
     </div>

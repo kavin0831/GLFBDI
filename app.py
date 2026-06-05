@@ -381,6 +381,94 @@ def _check_ap_zip_has_csv(content: bytes) -> tuple[bool, str]:
         return False, f"could not read ZIP: {e}"
 
 
+def _classify_ap_csv(filename: str, content: bytes) -> str:
+    """
+    Return "header" | "lines" | "flat" | "unknown" for an AP CSV based on
+    filename hint first, then content header sniffing.
+    """
+    n = (filename or "").lower()
+    if "apinvoiceslineinterface" in n or "apinvoicelinesinterface" in n or "_lines" in n:
+        return "lines"
+    if "apinvoicesinterface" in n or "_header" in n or "_hdr" in n:
+        return "header"
+    # Content sniff: peek at first 600 bytes
+    try:
+        head = content[:800].decode("utf-8", errors="replace").lower()
+    except Exception:
+        head = ""
+    # Header file has "*business unit", "*invoice number", supplier columns
+    if "business unit" in head and ("invoice number" in head or "*invoice number" in head) \
+       and "supplier" in head and "line type" not in head:
+        return "header"
+    # Line file has "*line type", "distribution combination/set"
+    if "*line type" in head or "line type" in head and "amount" in head and "distribution" in head:
+        return "lines"
+    # Otherwise it's a flat journal (single CSV with everything)
+    return "flat"
+
+
+def _pack_ap_pair_zip(header_bytes: bytes, lines_bytes: bytes) -> bytes:
+    """Pack a pre-built header + lines pair into a single FBDI ZIP."""
+    import zipfile as _zf, io as _io
+    buf = _io.BytesIO()
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        zf.writestr("ApInvoicesInterface.csv",     header_bytes)
+        zf.writestr("ApInvoiceLinesInterface.csv", lines_bytes)
+    return buf.getvalue()
+
+
+def _pair_ap_csv_uploads(
+    file_blobs: list[tuple[str, bytes]],
+) -> tuple[list[tuple[str, bytes, str]], list[tuple[str, bytes]], list[str]]:
+    """
+    Look at all the uploaded files. If there are matching ApInvoicesInterface
+    + ApInvoiceLinesInterface pairs, pack each pair into one ZIP.
+
+    Returns:
+      paired_zips  : [(virtual_zip_name, zip_bytes, "paired"), ...]
+      passthrough  : [(name, bytes), ...]  — flat CSVs or singleton files
+      warnings     : list of human-readable messages
+    """
+    headers: list[tuple[str, bytes]] = []
+    lines:   list[tuple[str, bytes]] = []
+    flats:   list[tuple[str, bytes]] = []
+    warns:   list[str] = []
+
+    for name, content in file_blobs:
+        kind = _classify_ap_csv(name, content)
+        if kind == "header":  headers.append((name, content))
+        elif kind == "lines": lines.append((name, content))
+        else:                 flats.append((name, content))
+
+    paired: list[tuple[str, bytes, str]] = []
+    # If we have header + lines candidates, pair them by order
+    if headers and lines:
+        # Each pair → one FBDI zip submission. If counts mismatch, pair as many
+        # as possible and warn about the orphans.
+        n = min(len(headers), len(lines))
+        for i in range(n):
+            h_name, h_bytes = headers[i]
+            l_name, l_bytes = lines[i]
+            zip_bytes = _pack_ap_pair_zip(h_bytes, l_bytes)
+            paired.append((f"AP_Batch_{i+1}_{Path(h_name).stem}.zip",
+                            zip_bytes, "paired"))
+        if len(headers) != len(lines):
+            extra_h = headers[n:]; extra_l = lines[n:]
+            for n2, _ in extra_h:
+                warns.append(f"{n2}: unpaired AP header CSV (no matching lines file uploaded)")
+            for n2, _ in extra_l:
+                warns.append(f"{n2}: unpaired AP lines CSV (no matching header file uploaded)")
+        return paired, flats, warns
+
+    # Header without lines or lines without header — error rather than silently
+    # creating broken submissions
+    for n2, _ in headers:
+        warns.append(f"{n2}: AP header CSV uploaded without a matching ApInvoiceLinesInterface.csv")
+    for n2, _ in lines:
+        warns.append(f"{n2}: AP lines CSV uploaded without a matching ApInvoicesInterface.csv")
+    return paired, flats, warns
+
+
 @app.post("/upload")
 async def upload_file(
     request: Request,
@@ -406,31 +494,51 @@ async def upload_file(
     req_ids = []
     errors = []
 
+    # ── AP multi-CSV pairing ──────────────────────────────────────────────
+    # When the user uploads ApInvoicesInterface.csv + ApInvoiceLinesInterface.csv
+    # as separate files, we pair them into one ZIP submission per pair instead
+    # of creating two orphan jobs.
+    raw_blobs: list[tuple[str, bytes]] = []
     for file in files:
         ext = Path(file.filename).suffix.lower()
         if ext not in allowed_ext:
             errors.append(f"{file.filename}: for {txn}, only {', '.join(sorted(allowed_ext))} allowed")
             continue
+        raw_blobs.append((file.filename, await file.read()))
 
+    if txn == "AP" and len(raw_blobs) >= 2 and all(n.lower().endswith(".csv") for n, _ in raw_blobs):
+        paired, passthrough, pair_warns = _pair_ap_csv_uploads(raw_blobs)
+        if pair_warns: errors.extend(pair_warns)
+        # Replace the raw_blobs list with paired ZIPs + any leftover flats
+        new_blobs: list[tuple[str, bytes]] = []
+        for name, zb, _ in paired:
+            new_blobs.append((name, zb))
+        new_blobs.extend(passthrough)
+        if paired:
+            logger.info("AP multi-CSV paired into %d ZIP(s) (passthrough=%d)",
+                        len(paired), len(passthrough))
+        raw_blobs = new_blobs
+
+    for filename, content in raw_blobs:
+        ext = Path(filename).suffix.lower() or ".zip"
         req_id  = str(uuid.uuid4())
-        content = await file.read()
 
         # AP-specific: a ZIP must contain at least one .csv inside
         if txn == "AP" and ext == ".zip":
             ok, msg = _check_ap_zip_has_csv(content)
             if not ok:
-                errors.append(f"{file.filename}: {msg}")
+                errors.append(f"{filename}: {msg}")
                 continue
 
         # All data lives in MongoDB — nothing written to local disk.
-        if not _store_and_verify_upload(req_id, file.filename, content, "manual_upload"):
-            errors.append(f"{file.filename}: storage failed — see server log")
+        if not _store_and_verify_upload(req_id, filename, content, "manual_upload"):
+            errors.append(f"{filename}: storage failed — see server log")
             continue
 
         with SessionLocal() as db:
             req_kwargs = dict(
-                id=req_id, file_name=file.filename,
-                file_path=file.filename,
+                id=req_id, file_name=filename,
+                file_path=filename,
                 file_type=ext.lstrip("."),
                 file_size_bytes=len(content), status="RECEIVED",
                 current_stage="QUEUED",
@@ -447,12 +555,12 @@ async def upload_file(
                     ap_pay_group          = ap_pay_group          or cfg.ap_pay_group,
                     ap_invoice_group      = ap_invoice_group      or cfg.ap_invoice_group,
                     legal_entity          = legal_entity          or "",
-                    journal_name          = journal_name or Path(file.filename).stem,
+                    journal_name          = journal_name or Path(filename).stem,
                 )
             else:
                 req_kwargs.update(
                     ledger_name  = ledger_name or "",
-                    journal_name = journal_name or Path(file.filename).stem,
+                    journal_name = journal_name or Path(filename).stem,
                     currency_code= currency,
                     period_name  = period_name,
                 )
@@ -461,8 +569,8 @@ async def upload_file(
 
         _dispatch_processing(req_id, txn)
         req_ids.append(req_id)
-        logger.info("Queued upload: %s → %s (%d bytes, MongoDB-only)",
-                    file.filename, req_id, len(content))
+        logger.info("Queued upload: %s → %s (%d bytes, MongoDB-only, %s)",
+                    filename, req_id, len(content), txn)
 
     if errors:
         err_msg = "; ".join(errors)
@@ -858,6 +966,8 @@ _FTYPE_TO_KIND = {
     "ap_hdr_csv":    "ap_hdr_csv",
     "ap_line_csv":   "ap_line_csv",
     "ap_report_pdf": "ap_report_pdf",
+    "ap_report_xml": "ap_report_xml",
+    "ap_report_html":"ap_report_html",
     "ap_report_txt": "ap_report_txt",
 }
 _FTYPE_MIME = {
@@ -868,6 +978,8 @@ _FTYPE_MIME = {
     "ap_hdr_csv":    "text/csv",
     "ap_line_csv":   "text/csv",
     "ap_report_pdf": "application/pdf",
+    "ap_report_xml": "application/xml",
+    "ap_report_html":"text/html",
     "ap_report_txt": "text/plain",
 }
 
@@ -920,29 +1032,43 @@ async def download_file(req_id: str, ftype: str, inline: int = 0):
 # ── AP Invoice Import Report — view PDF inline in browser ────────────────────
 
 @app.get("/request/{req_id}/ap-report")
-async def view_ap_report(req_id: str):
-    """View the AP Import Report PDF inline in the browser."""
+async def view_ap_report(req_id: str, fmt: str = ""):
+    """
+    View the AP Import Report inline. Prefers our rendered HTML (always present
+    after a successful run because we build it from the BIP XML data), with PDF
+    and XML available as fall-backs and as separate downloads.
+    """
     from fastapi.responses import Response
-    result = _resolve_versioned_kind(req_id, "ap_report_pdf")
-    if not result:
-        # Fall back to .txt or .out report if no PDF was preserved
-        result = _resolve_versioned_kind(req_id, "ap_report_txt")
-        if not result:
-            return HTMLResponse(
-                "<html><body style='font-family:sans-serif;padding:40px'>"
-                "<h2>AP Import Report not available</h2>"
-                "<p>This may happen if:</p>"
-                "<ul><li>The job hasn't run the report yet</li>"
-                "<li>Oracle returned an empty report</li>"
-                "<li>The user lacks ERP Integrations Administrator role</li></ul>"
-                "<p>Try the <a href='/request/" + req_id + "'>Request Detail</a> page.</p>"
-                "</body></html>", status_code=404)
-        content, filename = result
-        return Response(content=content, media_type="text/plain",
-                        headers={"Content-Disposition": f'inline; filename="{filename}"'})
-    content, filename = result
-    return Response(content=content, media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    # Priority: HTML (most readable) → PDF → XML → friendly 404
+    order = ["ap_report_html", "ap_report_pdf", "ap_report_xml", "ap_report_txt"]
+    if fmt == "pdf":  order = ["ap_report_pdf"] + order
+    if fmt == "xml":  order = ["ap_report_xml"] + order
+    if fmt == "html": order = ["ap_report_html"] + order
+
+    media_map = {
+        "ap_report_html": "text/html",
+        "ap_report_pdf":  "application/pdf",
+        "ap_report_xml":  "application/xml",
+        "ap_report_txt":  "text/plain",
+    }
+    for kind in order:
+        result = _resolve_versioned_kind(req_id, kind)
+        if result:
+            content, filename = result
+            return Response(
+                content=content,
+                media_type=media_map.get(kind, "application/octet-stream"),
+                headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            )
+    return HTMLResponse(
+        "<html><body style='font-family:sans-serif;padding:40px'>"
+        "<h2>AP Import Report not available</h2>"
+        "<p>Possible reasons:</p>"
+        "<ul><li>The import job hasn't finished yet — refresh in a moment</li>"
+        "<li>Oracle's Report sub-job ran but produced no data (e.g. PurgeOption removed the records)</li>"
+        "<li>The request was a GL journal, not AP</li></ul>"
+        f"<p><a href='/request/{req_id}'>← Back to request</a></p>"
+        "</body></html>", status_code=404)
 
 
 # ── Files API + per-file download ─────────────────────────────────────────────

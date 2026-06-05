@@ -46,3 +46,4 @@ boot.err
 
 storage/logs/
 storage/
+apinvoiceimporttest/post_*.py

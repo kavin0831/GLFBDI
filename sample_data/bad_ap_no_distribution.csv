@@ -1,0 +1,2 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Distribution Combination,Description,Accounting Date
+AP-NODIST-001,1000,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,1000,,,Line has neither Distribution Set nor Combination,2026-03-15

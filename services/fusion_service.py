@@ -137,6 +137,98 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -
     return data
 
 
+# ── AP Master-Data Lookups (Business Unit / Supplier / Site / Terms) ─────────
+
+def lookup_business_unit(cfg, bu_name: str) -> dict:
+    """
+    Resolve a Business Unit Name to its numeric BU ID, plus the associated
+    Primary Ledger ID and Legal Entity ID via finBusinessUnitsLOV REST.
+
+    Returns: {'BusinessUnitId': str, 'PrimaryLedgerId': str, 'LegalEntityId': str,
+              'BusinessUnitName': str} or {} if not found.
+    """
+    if not bu_name:
+        return {}
+    url = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/finBusinessUnitsLOV"
+    try:
+        r = httpx.get(url, params={"q": f"BusinessUnitName='{bu_name}'", "limit": 5},
+                      auth=_auth(cfg), timeout=30, headers={"Accept": "application/json"})
+        if r.status_code != 200:
+            logger.warning("BU lookup HTTP %d for %s", r.status_code, bu_name)
+            return {}
+        items = r.json().get("items", [])
+        if not items: return {}
+        it = items[0]
+        return {
+            "BusinessUnitId":   str(it.get("BusinessUnitId") or ""),
+            "BusinessUnitName": str(it.get("BusinessUnitName") or bu_name),
+            "PrimaryLedgerId":  str(it.get("PrimaryLedgerId") or ""),
+            "LegalEntityId":    str(it.get("LegalEntityId") or ""),
+        }
+    except Exception as e:
+        logger.warning("BU lookup error: %s", e)
+        return {}
+
+
+def lookup_supplier(cfg, supplier_number: str = "", supplier_name: str = "") -> dict:
+    """Look up supplier by number or name. Returns {} if not found."""
+    if not supplier_number and not supplier_name: return {}
+    url = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/suppliers"
+    if supplier_number:
+        q = f"SupplierNumber='{supplier_number}'"
+    else:
+        q = f"Supplier='{supplier_name}'"
+    try:
+        r = httpx.get(url, params={"q": q, "limit": 3},
+                      auth=_auth(cfg), timeout=30, headers={"Accept": "application/json"})
+        if r.status_code != 200: return {}
+        items = r.json().get("items", [])
+        if not items: return {}
+        it = items[0]
+        return {
+            "SupplierId":     str(it.get("SupplierId") or ""),
+            "SupplierName":   str(it.get("Supplier") or it.get("SupplierName") or ""),
+            "SupplierNumber": str(it.get("SupplierNumber") or supplier_number),
+        }
+    except Exception as e:
+        logger.warning("Supplier lookup error: %s", e); return {}
+
+
+def lookup_supplier_site(cfg, supplier_id: str, site_name: str) -> dict:
+    """Verify a supplier site exists for the given supplier. Returns {} if not."""
+    if not supplier_id or not site_name: return {}
+    url = (f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/"
+           f"suppliers/{supplier_id}/child/sites")
+    try:
+        r = httpx.get(url, params={"q": f"SupplierSite='{site_name}'", "limit": 3},
+                      auth=_auth(cfg), timeout=30, headers={"Accept": "application/json"})
+        if r.status_code != 200: return {}
+        items = r.json().get("items", [])
+        if not items: return {}
+        it = items[0]
+        return {"SupplierSiteId": str(it.get("SupplierSiteId") or ""),
+                "SupplierSite":   str(it.get("SupplierSite") or site_name)}
+    except Exception as e:
+        logger.warning("Supplier site lookup error: %s", e); return {}
+
+
+def lookup_payment_term(cfg, name: str) -> dict:
+    """Return {'TermsId': '...', 'Name': '...'} or {} if not found."""
+    if not name: return {}
+    url = f"{_base(cfg)}/fscmRestApi/resources/11.13.18.05/payablesPaymentTerms"
+    try:
+        r = httpx.get(url, params={"q": f"Name='{name}'", "limit": 3},
+                      auth=_auth(cfg), timeout=30, headers={"Accept": "application/json"})
+        if r.status_code != 200: return {}
+        items = r.json().get("items", [])
+        if not items: return {}
+        it = items[0]
+        return {"TermsId": str(it.get("TermsId") or ""),
+                "Name":    str(it.get("Name") or name)}
+    except Exception as e:
+        logger.warning("Payment term lookup error: %s", e); return {}
+
+
 # ── AP Invoice FBDI Submission ────────────────────────────────────────────────
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=4, max=30),
@@ -146,6 +238,7 @@ def submit_ap_fbdi(
     zip_path: str,
     invoice_group: str = "",
     accounting_date: str = "",
+    business_unit_name: str = "",
     business_unit_id: str = "",
     ledger_id: str = "",
     source: str = "External",
@@ -173,11 +266,22 @@ def submit_ap_fbdi(
       arg13 empty
       arg14 1  (InterfaceDetails)
     """
-    bu_id  = (business_unit_id or cfg.ap_business_unit_id or "").strip()
-    led_id = (ledger_id or cfg.ap_ledger_id or "").strip()
+    # Resolve BU name → IDs via REST (preferred). Falls back to explicit IDs.
+    bu_id  = (business_unit_id or "").strip()
+    led_id = (ledger_id or "").strip()
+    bu_name = (business_unit_name or cfg.ap_business_unit_name or "").strip()
+    if (not bu_id or not led_id) and bu_name:
+        info = lookup_business_unit(cfg, bu_name)
+        if info:
+            bu_id  = bu_id  or info.get("BusinessUnitId", "")
+            led_id = led_id or info.get("PrimaryLedgerId", "")
+            logger.info("Resolved BU '%s' → BU=%s Ledger=%s", bu_name, bu_id, led_id)
+    # Last-resort fallback to stored IDs (legacy settings)
+    bu_id  = bu_id  or (cfg.ap_business_unit_id or "").strip()
+    led_id = led_id or (cfg.ap_ledger_id        or "").strip()
     if not bu_id or not led_id:
-        raise ValueError("submit_ap_fbdi: ap_business_unit_id and ap_ledger_id "
-                         "must be configured in /settings before submitting AP invoices.")
+        raise ValueError("submit_ap_fbdi: could not resolve Business Unit / Ledger. "
+                         "Set the BU name in /settings AP tab (or pass an explicit ID).")
 
     src       = (source    or cfg.ap_source    or "External").strip()
     pay_grp   = (pay_group or cfg.ap_pay_group or "1000").strip()

@@ -1,0 +1,3 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-UNBAL-001,1000,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,400,IN200 Standard Distribution,Line does not balance to header,2026-03-15
+AP-UNBAL-001,1000,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,300,IN200 Standard Distribution,Total is 700 not 1000,2026-03-15

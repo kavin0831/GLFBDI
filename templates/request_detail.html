@@ -90,32 +90,67 @@
       </div>
     </div>
 
-    <!-- Journal params -->
+    <!-- Parameters -->
     <div class="card mb-3">
       <div class="card-header">
+        {% if req.transaction_type == 'AP' %}
+        <h2 class="card-title">&#128179; Invoice Parameters</h2>
+        {% else %}
         <h2 class="card-title">&#128196; Journal Parameters</h2>
+        {% endif %}
       </div>
       <div class="card-body">
-        <div class="info-row">
-          <div class="info-key">Ledger</div>
-          <div class="info-val">{{ req.ledger_name or '—' }}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-key">Period</div>
-          <div class="info-val">{{ req.period_name or '—' }}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-key">Accounting Date</div>
-          <div class="info-val">{{ req.accounting_date or '—' }}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-key">Journal Name</div>
-          <div class="info-val">{{ req.journal_name or '—' }}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-key">Currency</div>
-          <div class="info-val">{{ req.currency_code or '—' }}</div>
-        </div>
+        {% if req.transaction_type == 'AP' %}
+          <div class="info-row">
+            <div class="info-key">Business Unit</div>
+            <div class="info-val">{{ req.ap_business_unit_name or req.ap_business_unit_id or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Source</div>
+            <div class="info-val">{{ req.ap_source or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Invoice Group</div>
+            <div class="info-val">{{ req.ap_invoice_group or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Accounting Date</div>
+            <div class="info-val">{{ req.accounting_date or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Legal Entity</div>
+            <div class="info-val">{{ req.legal_entity or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Invoice Headers</div>
+            <div class="info-val">{{ req.ap_header_count or 0 }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Invoice Lines</div>
+            <div class="info-val">{{ req.ap_line_count or 0 }}</div>
+          </div>
+        {% else %}
+          <div class="info-row">
+            <div class="info-key">Ledger</div>
+            <div class="info-val">{{ req.ledger_name or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Period</div>
+            <div class="info-val">{{ req.period_name or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Accounting Date</div>
+            <div class="info-val">{{ req.accounting_date or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Journal Name</div>
+            <div class="info-val">{{ req.journal_name or '—' }}</div>
+          </div>
+          <div class="info-row">
+            <div class="info-key">Currency</div>
+            <div class="info-val">{{ req.currency_code or '—' }}</div>
+          </div>
+        {% endif %}
         <div class="info-row">
           <div class="info-key">Total Rows</div>
           <div class="info-val">{{ req.total_rows or '—' }}</div>
