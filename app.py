@@ -1313,6 +1313,10 @@ async def edit_request(request: Request, req_id: str):
         req = db.get(JournalRequest, req_id)
         if not req:
             return HTMLResponse("Not found", status_code=404)
+    # AP requests get the two-tab wizard (headers + lines)
+    if getattr(req, "transaction_type", "GL") == "AP":
+        return RedirectResponse(f"/request/{req_id}/edit-ap", status_code=303)
+
     headers, rows, version = _parse_request_source_to_table(req_id)
     if headers is None:
         return HTMLResponse("Source file not found", status_code=404)
@@ -1320,6 +1324,135 @@ async def edit_request(request: Request, req_id: str):
         "request": request, "req": req,
         "headers": headers, "rows": rows, "version": version,
     })
+
+
+def _csv_to_table(content: bytes) -> tuple[list[str], list[list[str]]]:
+    """Parse a CSV byte string into (headers, rows). Returns empty if blank."""
+    import csv as _csv, io as _io
+    if not content: return [], []
+    text = content.decode("utf-8", errors="replace")
+    reader = _csv.reader(_io.StringIO(text))
+    rows = [r for r in reader if any((c or "").strip() for c in r)]
+    if not rows: return [], []
+    return rows[0], rows[1:]
+
+
+@app.get("/request/{req_id}/edit-ap", response_class=HTMLResponse)
+async def edit_ap_request(request: Request, req_id: str):
+    """
+    Two-tab wizard for AP requests:
+      Tab 1 — ApInvoicesInterface.csv (invoice headers)
+      Tab 2 — ApInvoiceLinesInterface.csv (line items)
+    Loads the generated positional FBDI columns from the AP generator so
+    the user edits in Oracle's exact column layout.
+    """
+    from utils.ap_fbdi_generator import AP_HEADER_COLUMNS, AP_LINE_COLUMNS
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return HTMLResponse("Not found", status_code=404)
+
+    hdr_kind  = _resolve_versioned_kind(req_id, "ap_hdr_csv")
+    line_kind = _resolve_versioned_kind(req_id, "ap_line_csv")
+    hdr_content  = hdr_kind[0]  if hdr_kind  else b""
+    line_content = line_kind[0] if line_kind else b""
+
+    hdr_cols_in_file,  hdr_rows  = _csv_to_table(hdr_content)
+    line_cols_in_file, line_rows = _csv_to_table(line_content)
+
+    # Oracle FBDI CSVs are headerless positional — use the generator's column
+    # names as labels (the FBDI file itself has no header row)
+    hdr_columns  = [c for c in AP_HEADER_COLUMNS if c != "END"]
+    line_columns = [c for c in AP_LINE_COLUMNS  if c != "END"]
+
+    # If our stored file already has data rows (no header), every row should
+    # be aligned with hdr_columns positionally.
+    # The first stored "row" might be the data; CSV reader treated row 0 as
+    # the column-name row but our FBDI is headerless, so we put it back.
+    if hdr_cols_in_file: hdr_rows  = [hdr_cols_in_file]  + hdr_rows
+    if line_cols_in_file: line_rows = [line_cols_in_file] + line_rows
+
+    version = int(getattr(req, "version", 0) or 0)
+    return templates.TemplateResponse("edit_ap.html", {
+        "request": request, "req": req, "version": version,
+        "hdr_columns":  hdr_columns,  "hdr_rows":  hdr_rows,
+        "line_columns": line_columns, "line_rows": line_rows,
+    })
+
+
+@app.post("/request/{req_id}/save_edit_ap")
+async def save_edit_ap(req_id: str, request: Request):
+    """Save both header + line CSVs from the AP wizard and reprocess."""
+    import csv as _csv, io as _io
+    body = await request.json()
+    hdr_rows  = body.get("hdr_rows")  or []
+    line_rows = body.get("line_rows") or []
+
+    with SessionLocal() as db:
+        req = db.get(JournalRequest, req_id)
+        if not req:
+            return JSONResponse({"ok": False, "error": "not found"}, 404)
+        current_version = int(getattr(req, "version", 0) or 0)
+        new_version = current_version + 1
+
+        # Write both CSVs (headerless, END sentinel per row)
+        def _write(rows):
+            buf = _io.StringIO(newline="")
+            w = _csv.writer(buf, lineterminator="\n", quoting=_csv.QUOTE_MINIMAL)
+            for r in rows:
+                # Strip the END if user already typed it; we'll add it back
+                if r and r[-1] == "END":
+                    w.writerow(r)
+                else:
+                    w.writerow(list(r) + ["END"])
+            return buf.getvalue().encode("utf-8")
+
+        hdr_bytes  = _write(hdr_rows)
+        line_bytes = _write(line_rows)
+
+        # Pack into ZIP for resubmission
+        import zipfile as _zf
+        zip_buf = _io.BytesIO()
+        with _zf.ZipFile(zip_buf, "w", _zf.ZIP_DEFLATED) as zf:
+            zf.writestr("ApInvoicesInterface.csv",     hdr_bytes)
+            zf.writestr("ApInvoiceLinesInterface.csv", line_bytes)
+        zip_bytes = zip_buf.getvalue()
+
+        # Persist versioned copies + canonical v0 keys
+        store_generated_file(req_id, f"ap_hdr_csv_v{new_version}",
+                              f"ApInvoicesInterface_v{new_version}.csv", hdr_bytes)
+        store_generated_file(req_id, f"ap_line_csv_v{new_version}",
+                              f"ApInvoiceLinesInterface_v{new_version}.csv", line_bytes)
+        store_generated_file(req_id, f"fbdi_zip_v{new_version}",
+                              f"ApInvoicesImport_v{new_version}.zip", zip_bytes)
+        # Also overwrite canonical so downloads pick up latest
+        store_generated_file(req_id, "ap_hdr_csv_v0",
+                              "ApInvoicesInterface.csv", hdr_bytes)
+        store_generated_file(req_id, "ap_line_csv_v0",
+                              "ApInvoiceLinesInterface.csv", line_bytes)
+        store_generated_file(req_id, "fbdi_zip_v0",
+                              "ApInvoicesImport.zip", zip_bytes)
+
+        # Also store the new ZIP as the source upload so the next reprocess
+        # picks it up — workflow_ap's _process_prebuilt_ap_zip path will fire
+        store_uploaded_file(req_id, f"AP_Edited_v{new_version}.zip",
+                              zip_bytes, "manual_edit")
+        req.file_name = f"AP_Edited_v{new_version}.zip"
+        req.file_type = "zip"
+        req.file_size_bytes = len(zip_bytes)
+
+        # Bump version + queue reprocess as AP
+        req.version = new_version
+        req.status = "RECEIVED"
+        req.current_stage = "QUEUED"
+        req.error_message = None
+        req.stop_reason = None
+        req.ap_invoices_rejected = 0
+        req.ap_rejections_json = []
+        db.commit()
+
+    _dispatch_processing(req_id, "AP")
+    return JSONResponse({"ok": True, "version": new_version})
 
 
 @app.post("/request/{req_id}/save_edit")

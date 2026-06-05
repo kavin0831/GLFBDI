@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Edit AP Invoice {{ req.id[:8] }} — Oracle FBDI{% endblock %}
+{% block topbar_title %}
+  <a href="/" style="color:#9ca3af;text-decoration:none;font-weight:400">Dashboard</a>
+  <span style="color:#d1d5db;margin:0 8px">/</span>
+  <a href="/request/{{ req.id }}" style="color:#9ca3af;text-decoration:none;font-weight:400">Invoice {{ req.id[:8] }}…</a>
+  <span style="color:#d1d5db;margin:0 8px">/</span>
+  Edit
+{% endblock %}
+
+{% block topbar_actions %}
+  <a href="/request/{{ req.id }}" class="btn btn-secondary btn-sm">Cancel</a>
+{% endblock %}
+
+{% block content %}
+<style>
+  .wizard-step      { display:flex; align-items:center; gap:10px;
+                       padding:10px 18px; border-radius:8px; background:#f8f9fb;
+                       border:1px solid #e8ecf0; font-size:13.5px; }
+  .wizard-step.active { background:#fff7ed; border-color:#fdba74; color:#7c2d12; font-weight:600; }
+  .wizard-step .num { background:#e8f0fe; color:#1a73e8; width:24px; height:24px;
+                       border-radius:50%; display:inline-flex; align-items:center;
+                       justify-content:center; font-size:12px; font-weight:700; }
+  .wizard-step.active .num { background:#c74634; color:#fff; }
+  .wizard-step.done   .num { background:#1e7e34; color:#fff; }
+
+  .edit-tablewrap { overflow:auto; max-height:62vh; border:1px solid #e5e7eb;
+                    border-radius:6px; background:#fff; }
+  .edit-tablewrap table { border-collapse:separate; border-spacing:0;
+                          font-family: 'Consolas','Menlo','Courier New',monospace;
+                          font-size:11.5px; }
+  .edit-tablewrap thead th { position:sticky; top:0; background:#f3f4f6;
+                              color:#374151; padding:6px 8px;
+                              border-bottom:1px solid #d1d5db;
+                              white-space:nowrap; font-weight:600;
+                              min-width:130px; z-index:3; }
+  .edit-tablewrap thead th.col-check { min-width:36px; }
+  .edit-tablewrap td { padding:2px 4px; border-bottom:1px solid #f3f4f6; background:#fff; }
+  .edit-tablewrap td.col-check { text-align:center; width:36px; min-width:36px; }
+  .edit-tablewrap input[type=text] { width:100%; min-width:120px; padding:4px 6px;
+       border:1px solid #e5e7eb; border-radius:3px; font-family:inherit;
+       font-size:11.5px; background:#fafbfc; }
+  .edit-tablewrap input[type=text]:focus { outline:none; border-color:#2563eb; background:#fff; }
+  .edit-tablewrap tr.row-selected td { background:#fef3c7; }
+  .edit-status { margin-top:10px; min-height:1.4em; font-size:13px; }
+</style>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">&#128179; Edit AP Invoice FBDI — Wizard</h2>
+    <span class="badge badge-default">v{{ version }}</span>
+  </div>
+  <div class="card-body">
+
+    <!-- Wizard step indicator -->
+    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <div class="wizard-step active" id="step-1-pill">
+        <span class="num">1</span> Edit Invoice Headers
+        <span style="color:#9ca3af;font-size:11.5px;margin-left:6px">(ApInvoicesInterface.csv)</span>
+      </div>
+      <div class="wizard-step" id="step-2-pill">
+        <span class="num">2</span> Edit Invoice Lines
+        <span style="color:#9ca3af;font-size:11.5px;margin-left:6px">(ApInvoiceLinesInterface.csv)</span>
+      </div>
+      <div class="wizard-step" id="step-3-pill">
+        <span class="num">3</span> Save &amp; Reprocess
+      </div>
+    </div>
+
+    <div class="alert alert-info" style="font-size:12.5px;margin-bottom:14px">
+      Oracle's AP FBDI is <strong>headerless positional</strong>. Edit each row by
+      column position — column labels at top are for reference only and won't be
+      written into the CSV. Make sure <code>*Invoice ID</code> values in lines
+      match the corresponding header rows.
+    </div>
+
+    <!-- ───── Step 1: Headers ───────────────────────────────────────────── -->
+    <div id="step-1">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <button type="button" class="btn btn-outline btn-sm" onclick="addRow('hdr')">&#43; Add Header Row</button>
+        <button type="button" class="btn btn-outline btn-sm" style="color:#c0392b;border-color:#f5c6cb" onclick="delRows('hdr')">&#128465; Delete Selected</button>
+        <div style="margin-left:auto;color:#6b7280;font-size:13px">
+          <span id="hdr-count">{{ hdr_rows | length }}</span> header(s) &middot;
+          <span>{{ hdr_columns | length }}</span> columns
+        </div>
+      </div>
+      <div class="edit-tablewrap">
+        <table id="hdr-table">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="hdr-check-all"></th>
+              {% for col in hdr_columns %}<th title="{{ col }}">{{ col }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in hdr_rows %}
+            <tr>
+              <td class="col-check"><input type="checkbox" class="row-check"></td>
+              {% for cell in row %}<td><input type="text" value="{{ cell|e }}"></td>{% endfor %}
+              {% for _ in range(hdr_columns|length - row|length) %}<td><input type="text" value=""></td>{% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button type="button" class="btn btn-primary" onclick="goStep(2)">Next: Edit Lines &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ───── Step 2: Lines ─────────────────────────────────────────────── -->
+    <div id="step-2" style="display:none">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <button type="button" class="btn btn-outline btn-sm" onclick="addRow('line')">&#43; Add Line Row</button>
+        <button type="button" class="btn btn-outline btn-sm" style="color:#c0392b;border-color:#f5c6cb" onclick="delRows('line')">&#128465; Delete Selected</button>
+        <div style="margin-left:auto;color:#6b7280;font-size:13px">
+          <span id="line-count">{{ line_rows | length }}</span> line(s) &middot;
+          <span>{{ line_columns | length }}</span> columns
+        </div>
+      </div>
+      <div class="edit-tablewrap">
+        <table id="line-table">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="line-check-all"></th>
+              {% for col in line_columns %}<th title="{{ col }}">{{ col }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in line_rows %}
+            <tr>
+              <td class="col-check"><input type="checkbox" class="row-check"></td>
+              {% for cell in row %}<td><input type="text" value="{{ cell|e }}"></td>{% endfor %}
+              {% for _ in range(line_columns|length - row|length) %}<td><input type="text" value=""></td>{% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button type="button" class="btn btn-secondary" onclick="goStep(1)">&larr; Back to Headers</button>
+        <button type="button" class="btn btn-primary" onclick="goStep(3)">Next: Review &amp; Reprocess &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ───── Step 3: Save & Reprocess ──────────────────────────────────── -->
+    <div id="step-3" style="display:none">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><h2 class="card-title">&#9989; Review</h2></div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div>
+              <strong>ApInvoicesInterface.csv</strong>
+              <div style="font-size:13px;color:#6b7280">
+                <span id="review-hdr-count">0</span> header row(s)
+              </div>
+            </div>
+            <div>
+              <strong>ApInvoiceLinesInterface.csv</strong>
+              <div style="font-size:13px;color:#6b7280">
+                <span id="review-line-count">0</span> line row(s)
+              </div>
+            </div>
+          </div>
+          <div class="alert alert-info mt-3" style="font-size:13px;margin-bottom:0">
+            On save, both files are packaged into <code>ApInvoicesImport.zip</code>
+            and submitted to <strong>APXIIMPT</strong> with the configured BU,
+            Source, and Invoice Group. The Import Payables Invoices report PDF
+            will be re-rendered.
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button type="button" class="btn btn-secondary" onclick="goStep(2)">&larr; Back to Lines</button>
+        <button type="button" class="btn btn-primary" id="btn-save-reprocess" onclick="saveAndReprocess()">
+          &#128190; Save &amp; Reprocess
+        </button>
+        <span id="save-status" style="font-size:13px;color:#6b7280;display:none;align-items:center;gap:8px">
+          <span class="spinner"></span> Saving &amp; queueing reprocess&hellip;
+        </span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function goStep(n) {
+  for (var i = 1; i <= 3; i++) {
+    var pill = document.getElementById('step-' + i + '-pill');
+    var panel = document.getElementById('step-' + i);
+    pill.classList.remove('active','done');
+    panel.style.display = (i === n) ? 'block' : 'none';
+    if (i < n) pill.classList.add('done');
+    if (i === n) pill.classList.add('active');
+  }
+  if (n === 3) {
+    document.getElementById('review-hdr-count').textContent =
+      document.querySelectorAll('#hdr-table tbody tr').length;
+    document.getElementById('review-line-count').textContent =
+      document.querySelectorAll('#line-table tbody tr').length;
+  }
+}
+
+function collectRows(tableId) {
+  var rows = [];
+  document.querySelectorAll('#' + tableId + ' tbody tr').forEach(function(tr) {
+    var cells = [];
+    tr.querySelectorAll('td:not(.col-check) input[type=text]').forEach(function(inp) {
+      cells.push(inp.value);
+    });
+    rows.push(cells);
+  });
+  return rows;
+}
+
+function addRow(kind) {
+  var tbody = document.querySelector('#' + (kind === 'hdr' ? 'hdr' : 'line') + '-table tbody');
+  var cols  = document.querySelectorAll('#' + (kind === 'hdr' ? 'hdr' : 'line') + '-table thead th').length - 1;
+  var tr = document.createElement('tr');
+  var html = '<td class="col-check"><input type="checkbox" class="row-check"></td>';
+  for (var i = 0; i < cols; i++) html += '<td><input type="text" value=""></td>';
+  tr.innerHTML = html;
+  tbody.appendChild(tr);
+  document.getElementById((kind === 'hdr' ? 'hdr' : 'line') + '-count').textContent =
+    tbody.querySelectorAll('tr').length;
+}
+
+function delRows(kind) {
+  var tbody = document.querySelector('#' + (kind === 'hdr' ? 'hdr' : 'line') + '-table tbody');
+  tbody.querySelectorAll('tr').forEach(function(tr) {
+    if (tr.querySelector('.row-check').checked) tr.remove();
+  });
+  document.getElementById((kind === 'hdr' ? 'hdr' : 'line') + '-count').textContent =
+    tbody.querySelectorAll('tr').length;
+}
+
+['hdr','line'].forEach(function(k){
+  var box = document.getElementById(k + '-check-all');
+  box.addEventListener('change', function() {
+    document.querySelectorAll('#' + k + '-table tbody .row-check').forEach(function(c){
+      c.checked = box.checked;
+    });
+  });
+});
+
+async function saveAndReprocess() {
+  var btn = document.getElementById('btn-save-reprocess');
+  var status = document.getElementById('save-status');
+  btn.disabled = true;
+  status.style.display = 'inline-flex';
+  try {
+    var resp = await fetch('/request/{{ req.id }}/save_edit_ap', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        hdr_rows:  collectRows('hdr-table'),
+        line_rows: collectRows('line-table')
+      })
+    });
+    var data = await resp.json();
+    if (data.ok) {
+      window.location.href = '/request/{{ req.id }}';
+    } else {
+      alert('Save failed: ' + (data.error || 'unknown'));
+      btn.disabled = false; status.style.display = 'none';
+    }
+  } catch (e) {
+    alert('Network error: ' + e);
+    btn.disabled = false; status.style.display = 'none';
+  }
+}
+</script>
+{% endblock %}

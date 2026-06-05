@@ -374,7 +374,10 @@ _DEFAULT_SETTINGS = {
     "gl_job_options":          "EnableEvent=Y,importOption=Y,purgeOption=Y,ExtractFileType!= NONE",
     "ap_callback_url":         "#NULL",
     "ap_notification_code":    "10",
-    "ap_job_options":          "InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL",
+    # NOTE: PurgeOption=N — keep interface rows so the BIP report can show
+    # rejection details after the import completes. Y purges immediately and
+    # the rendered PDF ends up empty ("No Data Found for Rejections Report").
+    "ap_job_options":          "InterfaceDetails=1,ImportOption=Y,PurgeOption=N,ExtractFileType=ALL",
     # BIP report — for rendering real Oracle PDF
     "ap_bip_report_path":      "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo",
     "ap_bip_report_param":     "P_REQUEST_ID",
@@ -474,6 +477,15 @@ def init_db():
                 mdb["app_settings"].update_one({"_id": "settings"}, {"$set": missing})
                 logger.info("Backfilled %d AP/GL setting fields: %s",
                             len(missing), ", ".join(sorted(missing.keys())))
+            # Heal: force-overwrite ap_job_options if it still carries the
+            # legacy PurgeOption=Y (which wipes rejection rows the BIP report
+            # needs). Users can change this in /settings if they want purge on.
+            if existing.get("ap_job_options") and "PurgeOption=Y" in existing["ap_job_options"]:
+                mdb["app_settings"].update_one(
+                    {"_id": "settings"},
+                    {"$set": {"ap_job_options": _DEFAULT_SETTINGS["ap_job_options"]}},
+                )
+                logger.info("Healed ap_job_options: PurgeOption=Y → N")
 
         # Backfill transaction_type='GL' on all existing journal_requests
         # so the dashboard tab filter works correctly.
