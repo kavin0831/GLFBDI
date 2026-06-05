@@ -138,6 +138,95 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -
     return data
 
 
+def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
+    """
+    Parse Oracle's Import Payables Invoices BIP data XML to detect actual outcome.
+
+    Looks at:
+      - <C_INVOICES_FETCHED> / <G_INVOICES_FETCHED>
+      - <C_INVOICES_CREATED> / <G_INVOICES_CREATED>
+      - <C_INVOICES_REJECTED>
+      - <LIST_G_BUSINESS_UNIT_REJECTION>/G_BUSINESS_UNIT_REJECTION/LIST_G_REJECTIONS/G_REJECTIONS
+
+    Returns: {
+      'fetched': int, 'created': int, 'rejected': int,
+      'rejections': [
+        {'invoice_num': str, 'invoice_id': str, 'supplier': str, 'site': str,
+         'amount': str, 'reasons': [str, ...], 'descriptions': [str, ...]},
+        ...
+      ],
+      'has_rejections': bool,
+      'summary': str,    # one-line for stop_reason
+    }
+    """
+    from xml.etree import ElementTree as ET
+    out = {"fetched": 0, "created": 0, "rejected": 0,
+           "rejections": [], "has_rejections": False, "summary": ""}
+    if not xml_bytes:
+        return out
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return out
+
+    def _i(tag, default=0):
+        el = root.find(f".//{tag}")
+        try: return int((el.text or "").strip()) if el is not None and el.text else default
+        except (ValueError, TypeError): return default
+
+    out["fetched"]  = _i("G_INVOICES_FETCHED")  or _i("C_INVOICES_FETCHED")
+    out["created"]  = _i("G_INVOICES_CREATED")  or _i("C_INVOICES_CREATED")
+    out["rejected"] = _i("C_INVOICES_REJECTED")
+
+    # Walk every G_REJECTIONS block — handles multi-BU and multi-invoice
+    for rej in root.findall(".//G_REJECTIONS"):
+        invoice = {
+            "invoice_num":  (rej.findtext("INVOICE_NUM_R") or "").strip(),
+            "invoice_id":   (rej.findtext("INVOICE_ID_R") or "").strip(),
+            "supplier":     (rej.findtext("SUPPLIER_NAME_R") or "").strip(),
+            "supplier_num": (rej.findtext("SUPPLIER_NUMBER_R") or "").strip(),
+            "site":         (rej.findtext("VENDOR_SITE_CODE") or "").strip(),
+            "currency":     (rej.findtext("INVOICE_CURRENCY_CODE_R") or "").strip(),
+            "date":         (rej.findtext("INVOICE_DATE_R") or "").strip(),
+            "amount":       (rej.findtext("INVOICE_AMOUNT_R") or rej.findtext("INVOICE_AMOUNT_REJ") or "").strip(),
+            "reasons":      [], "descriptions": [],
+        }
+        for d in rej.findall("./LIST_G_REJECTIONS_DETAIL/G_REJECTIONS_DETAIL"):
+            r = (d.findtext("REJECT_REASON") or "").strip()
+            desc = (d.findtext("REJECTION_DESCRIPTION") or "").strip()
+            if r:    invoice["reasons"].append(r)
+            if desc: invoice["descriptions"].append(desc)
+        out["rejections"].append(invoice)
+
+    # Heuristic: also consider "fetched > created" as a problem even if
+    # C_INVOICES_REJECTED isn't populated (some Oracle versions omit it)
+    out["has_rejections"] = (
+        out["rejected"] > 0
+        or len(out["rejections"]) > 0
+        or (out["fetched"] > 0 and out["created"] == 0)
+        or (out["fetched"] > 0 and out["created"] < out["fetched"])
+    )
+
+    if out["has_rejections"]:
+        # Build a concise summary listing the unique reasons
+        all_reasons = []
+        for inv in out["rejections"]:
+            all_reasons.extend(inv["reasons"])
+        unique = list(dict.fromkeys(all_reasons))   # preserve order, de-dup
+        reasons_str = "; ".join(unique[:5]) or "see report"
+        out["summary"] = (
+            f"Import Payables Invoices: {out['rejected'] or len(out['rejections'])} "
+            f"of {out['fetched']} invoices rejected ({out['created']} created). "
+            f"Reasons: {reasons_str}"
+        )
+    else:
+        out["summary"] = (
+            f"Import Payables Invoices: {out['created']}/{out['fetched']} invoices imported successfully."
+        )
+
+    return out
+
+
 # ── BI Publisher: render the real Oracle PDF for an ESS BIP job ───────────────
 
 # Confirmed working live with credentials Kavin.Sasikumar on

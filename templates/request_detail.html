@@ -129,6 +129,16 @@
             <div class="info-key">Invoice Lines</div>
             <div class="info-val">{{ req.ap_line_count or 0 }}</div>
           </div>
+          {% if req.ap_invoices_fetched is not none and req.ap_invoices_fetched > 0 %}
+          <div class="info-row">
+            <div class="info-key">Oracle Result</div>
+            <div class="info-val">
+              <strong style="color:#1e7e34">{{ req.ap_invoices_created or 0 }} created</strong>
+              &middot; <strong style="color:#c0392b">{{ req.ap_invoices_rejected or 0 }} rejected</strong>
+              &middot; {{ req.ap_invoices_fetched or 0 }} fetched
+            </div>
+          </div>
+          {% endif %}
         {% else %}
           <div class="info-row">
             <div class="info-key">Ledger</div>
@@ -250,6 +260,43 @@
       </div>
       <div class="card-body">
         <div class="log-box">{{ req.stop_reason }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Rejected Invoices (AP) — surfaces the BIP XML rejection detail -->
+    {% if req.transaction_type == 'AP' and req.ap_rejections_json %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <h2 class="card-title" style="color:#c0392b">&#9888; Rejected Invoices</h2>
+        <span class="badge badge-failed">{{ req.ap_rejections_json | length }} invoices</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="background:#f8f9fb">
+              <th style="padding:8px 12px;border-bottom:1px solid #e8ecf0;text-align:left">Invoice #</th>
+              <th style="padding:8px 12px;border-bottom:1px solid #e8ecf0;text-align:left">Supplier</th>
+              <th style="padding:8px 12px;border-bottom:1px solid #e8ecf0;text-align:left">Site</th>
+              <th style="padding:8px 12px;border-bottom:1px solid #e8ecf0;text-align:right">Amount</th>
+              <th style="padding:8px 12px;border-bottom:1px solid #e8ecf0;text-align:left">Reject Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inv in req.ap_rejections_json %}
+            <tr>
+              <td style="padding:8px 12px;border-bottom:1px solid #f0f2f5;font-weight:600;font-family:monospace">{{ inv.invoice_num }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #f0f2f5">{{ inv.supplier }} <span style="color:#9ca3af">#{{ inv.supplier_num }}</span></td>
+              <td style="padding:8px 12px;border-bottom:1px solid #f0f2f5">{{ inv.site }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #f0f2f5;text-align:right">{{ inv.currency }} {{ inv.amount }}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #f0f2f5;color:#c0392b">
+                {% for r in inv.reasons %}<div>{{ r }}</div>{% endfor %}
+                {% for d in inv.descriptions %}<div style="color:#9ca3af;font-size:11.5px">{{ d }}</div>{% endfor %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
     {% endif %}

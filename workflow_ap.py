@@ -22,7 +22,7 @@ from database import (
     has_generated_file, get_generated_file,
 )
 from services.fusion_service import (
-    analyze_ess_logs, download_ess_logs,
+    analyze_ap_bip_xml, analyze_ess_logs, download_ess_logs,
     find_ap_import_jobs, get_ess_status, get_execution_details,
     scheduled_processes_url, submit_ap_fbdi,
 )
@@ -391,27 +391,46 @@ def process_ap_request(request_id: str) -> None:
     # Download logs from EVERY related ESS request (parent + JI + Report)
     _download_all_ap_logs(request_id, eid, ap_jobs)
 
-    # Also fetch the Import Payables Invoices Report PDF (if present in logs)
+    # Render BIP report PDF + analyze the data XML for actual outcome
+    bip = {}
     try:
-        _save_ap_report_pdf(request_id, ap_jobs)
+        bip = _save_ap_report_pdf(request_id, ap_jobs) or {}
     except Exception as e:
         _log(request_id, "WARN", f"Report extraction failed: {e}")
 
-    # Inner failure detection
+    # Persist the headline counts for the UI
+    if bip.get("fetched") is not None:
+        _db_update(request_id,
+                   ap_invoices_fetched  = bip.get("fetched", 0),
+                   ap_invoices_created  = bip.get("created", 0),
+                   ap_invoices_rejected = bip.get("rejected", 0),
+                   ap_rejections_json   = bip.get("rejections", []))
+
+    # Inner failure detection — ESS job status OR BIP rejection count
     inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
-                       for j in ap_jobs)
+                       for j in ap_jobs) or bool(bip.get("has_rejections"))
     ess_succeeded = final in ("SUCCEEDED","WARNING","QUEUED")
+    bip_summary = bip.get("summary", "")
 
     if ess_succeeded and not inner_failed:
         _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
         _log(request_id, "INFO", "AP import completed successfully")
+        _log(request_id, "INFO", bip_summary or "AP import completed")
         _send_ap_email(request_id, "success", ap_jobs)
     else:
-        reason = f"AP child job(s) failed: " + ", ".join(
-            f"{j['name']}={j['status']}" for j in ap_jobs
-        ) if inner_failed else f"ESS request ended with status: {final}"
+        # Compose a detailed failure reason from BIP summary + ESS statuses
+        parts: list[str] = []
+        if bip_summary and bip.get("has_rejections"):
+            parts.append(bip_summary)
+        if any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED") for j in ap_jobs):
+            parts.append("AP child job(s): " +
+                          ", ".join(f"{j['name']}={j['status']}" for j in ap_jobs))
+        if not ess_succeeded:
+            parts.append(f"ESS request ended with status: {final}")
+        reason = " | ".join(parts) or f"Import did not succeed (final={final})"
         _db_update(request_id, status="FAILED",
-                   current_stage="IMPORT_ERRORS" if inner_failed else "ESS_FAILED",
+                   current_stage="IMPORT_REJECTED" if bip.get("has_rejections")
+                                 else ("IMPORT_ERRORS" if inner_failed else "ESS_FAILED"),
                    stop_reason=reason)
         _send_ap_email(request_id, "failure", ap_jobs, reason)
 
@@ -492,26 +511,42 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     # Download logs from EVERY related ESS request
     _download_all_ap_logs(request_id, eids[0], all_ap_jobs)
 
-    # Render Import Payables Invoices Report (BIP XML → HTML+PDF)
+    # Render Import Payables Invoices Report (real Oracle BIP PDF) + analyze
+    bip = {}
     try:
-        _save_ap_report_pdf(request_id, all_ap_jobs)
+        bip = _save_ap_report_pdf(request_id, all_ap_jobs) or {}
     except Exception as e:
         _log(request_id, "WARN", f"Report rendering failed: {e}")
 
-    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
-                       for j in all_ap_jobs)
+    if bip.get("fetched") is not None:
+        _db_update(request_id,
+                   ap_invoices_fetched  = bip.get("fetched", 0),
+                   ap_invoices_created  = bip.get("created", 0),
+                   ap_invoices_rejected = bip.get("rejected", 0),
+                   ap_rejections_json   = bip.get("rejections", []))
 
-    if final in ("SUCCEEDED","WARNING") and not inner_failed:
+    inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
+                       for j in all_ap_jobs) or bool(bip.get("has_rejections"))
+    bip_summary = bip.get("summary", "")
+    ess_succeeded = final in ("SUCCEEDED", "WARNING")
+
+    if ess_succeeded and not inner_failed:
         _db_update(request_id, status="SUCCEEDED", current_stage="COMPLETED")
-        _log(request_id, "INFO", "Pre-built AP import completed successfully")
+        _log(request_id, "INFO", bip_summary or "Pre-built AP import completed")
         _send_ap_email(request_id, "success", all_ap_jobs)
     else:
-        reason = (f"AP child job(s) reported issues: " +
-                  ", ".join(f"{j['name']}={j['status']}" for j in all_ap_jobs)
-                  if inner_failed else
-                  f"ESS request ended with status: {final}")
+        parts: list[str] = []
+        if bip_summary and bip.get("has_rejections"):
+            parts.append(bip_summary)
+        if any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED") for j in all_ap_jobs):
+            parts.append("AP child job(s): " +
+                          ", ".join(f"{j['name']}={j['status']}" for j in all_ap_jobs))
+        if not ess_succeeded:
+            parts.append(f"ESS request ended with status: {final}")
+        reason = " | ".join(parts) or f"Import did not succeed (final={final})"
         _db_update(request_id, status="FAILED",
-                   current_stage="IMPORT_ERRORS" if inner_failed else "ESS_FAILED",
+                   current_stage="IMPORT_REJECTED" if bip.get("has_rejections")
+                                 else ("IMPORT_ERRORS" if inner_failed else "ESS_FAILED"),
                    stop_reason=reason)
         _send_ap_email(request_id, "failure", all_ap_jobs, reason)
 
@@ -569,7 +604,7 @@ def _download_all_ap_logs(request_id: str, parent_eid: str,
          f"Downloaded {len(zip_bytes)} bytes ESS logs across {len(ids)} job(s): {ids}")
 
 
-def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
+def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
     """
     Persist the AP Import Report.
 
@@ -618,7 +653,8 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
         _log(request_id, "WARN",
              "Could not find 'Import Payables Invoices' job ID; skipping BIP PDF render")
 
-    # 2. Also save the BIP data XML for audit / debugging
+    # 2. Save the BIP data XML for audit AND analyze it to detect rejections
+    bip_analysis: dict = {}
     if report_job_id:
         try:
             logs = download_ess_logs(get_settings(), report_job_id)
@@ -634,11 +670,21 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
                                 store_generated_file(request_id, "ap_report_xml",
                                                       f"ap_report_data_{report_job_id}.xml",
                                                       xml_content)
+                                bip_analysis = analyze_ap_bip_xml(xml_content)
                                 _log(request_id, "INFO",
-                                     f"Saved BIP data XML ({len(xml_content)} bytes)")
+                                     f"BIP XML: fetched={bip_analysis.get('fetched')}, "
+                                     f"created={bip_analysis.get('created')}, "
+                                     f"rejected={bip_analysis.get('rejected')}")
+                                for inv in bip_analysis.get("rejections", [])[:10]:
+                                    reasons = "; ".join(inv["reasons"]) or "—"
+                                    _log(request_id, "ERROR",
+                                         f"REJECTED  {inv['invoice_num']} (Supplier {inv['supplier']} "
+                                         f"#{inv['supplier_num']}, {inv['currency']} {inv['amount']}) — {reasons}")
                                 break
         except Exception as e:
             logger.warning("BIP XML extraction failed: %s", e)
+
+    return bip_analysis
 
 
 def _render_ap_report_from_bip_xml(xml_bytes: bytes, request_id: str,
