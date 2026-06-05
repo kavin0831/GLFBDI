@@ -505,26 +505,38 @@ def find_ap_import_jobs(cfg, after_request_id: str, scan_range: int = 30,
         start = int(after_request_id)
     except (ValueError, TypeError):
         return []
-    found: list[dict] = []
-    for rid in range(start + 1, start + scan_range + 1):
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    rids = [str(rid) for rid in range(start + 1, start + scan_range + 1)]
+
+    def _probe(rid):
         try:
-            det = get_execution_details(cfg, str(rid))
+            det = get_execution_details(cfg, rid)
+            hits = []
             for j in det.get("child_jobs", []):
                 name = (j.get("name") or "").strip()
                 if ("Import Payables Invoices" in name
                         or "APXIIMPT" in name
                         or "Payables Invoices Report" in name):
-                    found.append({
-                        "request_id": j.get("request_id") or str(rid),
-                        "name":       name,
-                        "status":     j.get("status") or "",
-                        "scanned_from": str(rid),
+                    hits.append({
+                        "request_id":   j.get("request_id") or rid,
+                        "name":         name,
+                        "status":       j.get("status") or "",
+                        "scanned_from": rid,
                     })
+            return hits
         except Exception:
-            continue
-    # Dedupe
-    seen = set(); out = []
-    for j in found:
+            return []
+
+    found: list[dict] = []
+    # Up to `max_workers` parallel probes — Oracle handles this fine
+    with ThreadPoolExecutor(max_workers=max(2, min(max_workers, len(rids)))) as pool:
+        for fut in as_completed([pool.submit(_probe, rid) for rid in rids]):
+            found.extend(fut.result())
+
+    # Dedupe and order by request_id ascending
+    seen = set(); out: list[dict] = []
+    for j in sorted(found, key=lambda x: str(x["request_id"])):
         if j["request_id"] not in seen:
             seen.add(j["request_id"]); out.append(j)
     return out

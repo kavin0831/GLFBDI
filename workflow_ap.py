@@ -285,21 +285,42 @@ def _stage_submit(req_id: str, zip_path: Path, meta: dict) -> str | None:
 
 
 def _stage_monitor(req_id: str, eid: str) -> str:
+    """
+    Poll Oracle ESS for the parent submission. Uses adaptive cadence so the
+    user sees fast feedback during the short interactive phase, then backs off
+    to the configured interval for long-running imports.
+    """
     if not eid or eid in ("-1", "QUEUED", ""):
         return "QUEUED"
     _db_update(req_id, current_stage="MONITORING")
     cfg = get_settings()
-    max_polls = (cfg.ess_max_minutes * 60) // max(cfg.ess_poll_seconds, 1)
-    _log(req_id, "INFO", f"Polling ESS request {eid}...")
+    base_interval = max(int(cfg.ess_poll_seconds or 5), 2)
+    max_seconds   = int(cfg.ess_max_minutes or 30) * 60
+    _log(req_id, "INFO", f"Polling ESS request {eid} (adaptive cadence)...")
+
     last = "WAIT"
-    for n in range(1, int(max_polls) + 1):
+    elapsed = 0
+    poll_n = 0
+    last_log_status = None
+    while elapsed < max_seconds:
+        poll_n += 1
         st = get_ess_status(cfg, eid)
-        _log(req_id, "INFO", f"Poll {n}: {st}")
         last = st
-        _db_update(req_id, ess_final_status=st)
-        if st in ("SUCCEEDED","ERROR","WARNING","CANCELLED","BLOCKED"):
+        _db_update(req_id, ess_final_status=st,
+                   current_stage=f"MONITORING ({st})")
+        # Only log when the status changes — keeps the timeline readable
+        if st != last_log_status:
+            _log(req_id, "INFO", f"ESS {eid} → {st}  (poll #{poll_n}, {elapsed}s)")
+            last_log_status = st
+        if st in ("SUCCEEDED", "ERROR", "WARNING", "CANCELLED", "BLOCKED"):
             return st
-        time.sleep(cfg.ess_poll_seconds)
+        # Adaptive: 3s for first 30s (10 polls), 6s next 60s, then configured interval
+        if elapsed < 30:    delay = 3
+        elif elapsed < 90:  delay = 6
+        else:               delay = base_interval
+        time.sleep(delay)
+        elapsed += delay
+    _log(req_id, "WARN", f"ESS poll timed out after {elapsed}s — last status: {last}")
     return last or "TIMEOUT"
 
 
@@ -380,10 +401,18 @@ def process_ap_request(request_id: str) -> None:
 
     final = _stage_monitor(request_id, eid)
 
-    # Discover downstream "Import Payables Invoices" requests + fetch their logs
-    _log(request_id, "INFO", "Waiting 30s for AP downstream jobs to spawn…")
-    time.sleep(30)
-    ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=30)
+    # Discover downstream "Import Payables Invoices" requests. Poll actively
+    # rather than sleeping 30s — exit as soon as they appear (or after 60s).
+    _db_update(request_id, current_stage="FINDING_AP_JOBS")
+    _log(request_id, "INFO", "Searching for downstream AP Import jobs…")
+    ap_jobs: list[dict] = []
+    for attempt in range(12):
+        ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=30)
+        if ap_jobs:
+            _log(request_id, "INFO",
+                 f"Found {len(ap_jobs)} AP job(s) after {attempt*5}s")
+            break
+        time.sleep(5)
     for j in ap_jobs:
         _log(request_id, "INFO",
              f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
@@ -393,6 +422,8 @@ def process_ap_request(request_id: str) -> None:
 
     # Render BIP report PDF + analyze the data XML for actual outcome
     bip = {}
+    _db_update(request_id, current_stage="RENDERING_REPORT")
+    _log(request_id, "INFO", "Rendering Import Payables Invoices report (BIP)…")
     try:
         bip = _save_ap_report_pdf(request_id, ap_jobs) or {}
     except Exception as e:
@@ -498,12 +529,19 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
 
     final = _stage_monitor(request_id, eids[0])
 
-    # Discover downstream "Import Payables Invoices" requests + fetch logs
-    _log(request_id, "INFO", "Waiting 30s for AP downstream jobs to spawn…")
-    time.sleep(30)
+    # Active poll for downstream AP jobs (instead of fixed 30s sleep)
+    _db_update(request_id, current_stage="FINDING_AP_JOBS")
+    _log(request_id, "INFO", "Searching for downstream AP Import jobs…")
     all_ap_jobs: list[dict] = []
-    for eid in eids:
-        all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=30))
+    for attempt in range(12):
+        all_ap_jobs = []
+        for eid in eids:
+            all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=30))
+        if all_ap_jobs:
+            _log(request_id, "INFO",
+                 f"Found {len(all_ap_jobs)} AP job(s) after {attempt*5}s")
+            break
+        time.sleep(5)
     for j in all_ap_jobs:
         _log(request_id, "INFO",
              f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
@@ -513,6 +551,8 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
 
     # Render Import Payables Invoices Report (real Oracle BIP PDF) + analyze
     bip = {}
+    _db_update(request_id, current_stage="RENDERING_REPORT")
+    _log(request_id, "INFO", "Rendering Import Payables Invoices report (BIP)…")
     try:
         bip = _save_ap_report_pdf(request_id, all_ap_jobs) or {}
     except Exception as e:
@@ -556,13 +596,14 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
 def _download_all_ap_logs(request_id: str, parent_eid: str,
                             ap_jobs: list[dict]) -> None:
     """
-    Fetch ESS logs for every related request — the parent submission, plus
-    every "Import Payables Invoices" / "Report" job spawned downstream — and
-    combine them into a single ess_logs_<id>.zip with subdirectories per job.
+    Fetch ESS logs for every related request in PARALLEL — the parent
+    submission, plus every "Import Payables Invoices" / "Report" job spawned
+    downstream. Combines them into a single ess_logs_<id>.zip with one
+    subdirectory per job.
     """
     import io as _io
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     cfg = get_settings()
-    combined: dict[str, bytes] = {}
 
     # Build the list of request IDs (de-dup'd) — parent + every ap_job id
     ids: list[str] = [str(parent_eid)]
@@ -570,19 +611,35 @@ def _download_all_ap_logs(request_id: str, parent_eid: str,
         rid = str(j.get("request_id") or "")
         if rid and rid not in ids: ids.append(rid)
 
-    for rid in ids:
+    _db_update(request_id, current_stage="FETCHING_LOGS")
+    _log(request_id, "INFO",
+         f"Fetching logs for {len(ids)} ESS request(s) in parallel: {ids}")
+
+    combined: dict[str, bytes] = {}
+    def _fetch(rid):
         try:
-            logs = download_ess_logs(cfg, rid)
-            zb = logs.get("zip_bytes")
-            if not zb:
-                continue
-            with _zipfile.ZipFile(_io.BytesIO(zb)) as zf:
-                for name in zf.namelist():
-                    key = f"{rid}/{name}" if not name.startswith(f"{rid}/") else name
-                    if key not in combined:
-                        combined[key] = zf.read(name)
+            return rid, download_ess_logs(cfg, rid)
         except Exception as e:
             logger.warning("Log fetch failed for %s: %s", rid, e)
+            return rid, None
+
+    # Up to 6 in flight — Oracle handles this comfortably
+    with ThreadPoolExecutor(max_workers=min(6, len(ids))) as pool:
+        for fut in as_completed([pool.submit(_fetch, rid) for rid in ids]):
+            rid, logs = fut.result()
+            if not logs: continue
+            zb = logs.get("zip_bytes")
+            if not zb: continue
+            try:
+                with _zipfile.ZipFile(_io.BytesIO(zb)) as zf:
+                    for name in zf.namelist():
+                        key = f"{rid}/{name}" if not name.startswith(f"{rid}/") else name
+                        if key not in combined:
+                            combined[key] = zf.read(name)
+                _log(request_id, "INFO",
+                     f"  ↳ {rid}: {len(zb)} bytes ({len(zf.namelist())} files)")
+            except Exception as e:
+                logger.warning("Bad log zip from %s: %s", rid, e)
 
     if not combined:
         _log(request_id, "WARN", "No ESS logs retrievable from Oracle")
@@ -601,7 +658,7 @@ def _download_all_ap_logs(request_id: str, parent_eid: str,
     store_generated_file(request_id, "ess_log_v0", log_zip.name, zip_bytes)
     _db_update(request_id, ess_log_path=str(log_zip))
     _log(request_id, "INFO",
-         f"Downloaded {len(zip_bytes)} bytes ESS logs across {len(ids)} job(s): {ids}")
+         f"Combined {len(zip_bytes)} bytes of logs across {len(ids)} job(s)")
 
 
 def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
