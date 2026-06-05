@@ -1042,7 +1042,8 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
         # stores rows with the same id Journal Import will scan for. Without
         # this rewrite the loader would store rows with empty group_id while
         # we pass the new id as the JI parameter → "Total: 0 group id(s)".
-        group_id = str(abs(hash(request_id)) % 999999999)
+        import hashlib as _h
+        group_id = str(int(_h.sha1(request_id.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
         try:
             import zipfile as _zfw, io as _iow, csv as _csvw, tempfile as _tmpw, os as _osw
             new_zip = zip_path.with_suffix(".gidpatch.zip")
@@ -1490,10 +1491,13 @@ def _process_request_impl(request_id: str):
         logger.warning("Period status check failed — proceeding anyway")
 
     # 8. Submit to Oracle Fusion
-    # Always generate a unique numeric identifier from our internal request_id.
-    # Any Interface Group Identifier column in the user's data file is ignored;
-    # we control this value so concurrent submissions stay correlated.
-    group_id = str(abs(hash(request_id)) % 999999999)
+    # Generate a deterministic numeric Interface Group Identifier from our
+    # internal request_id. We use SHA-1 (not Python's hash()) because hash() is
+    # salted per-process — that would mean the value changes after a server
+    # restart, and reprocess would generate a CSV with one group_id but submit
+    # a ParameterList with a different group_id → JI finds 0 matching rows.
+    import hashlib as _h
+    group_id = str(int(_h.sha1(request_id.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
     _db_update(request_id, fusion_group_id=group_id)
     eid = _stage_submit(request_id, zip_path, group_id=group_id,
                         ledger_name=meta.get("ledger_name", ""))

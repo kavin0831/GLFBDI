@@ -1,0 +1,3 @@
+Date,Company,CostCenter,Account,Product,Future,Intercompany,Description,Debit,Credit,Currency,Reference
+2026/06/23,999,10,60230,121,000,000,Company 999 doesn't exist — will be rejected by Oracle COA,500.00,,USD,GL-BAD-CO-001
+2026/06/23,999,10,60230,121,000,000,Company 999 offset,,500.00,USD,GL-BAD-CO-001

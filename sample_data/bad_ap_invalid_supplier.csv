@@ -1,0 +1,2 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-BAD-SUP-001,500,2026-04-20,Nonexistent Supplier Co,9999999,FAKE-SITE,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,Supplier number 9999999 does not exist in Oracle — should be rejected,2026-04-20

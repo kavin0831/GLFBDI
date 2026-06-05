@@ -1,0 +1,7 @@
+Date,Company,CostCenter,Account,Product,Future,Intercompany,Description,Debit,Credit,Currency,Reference
+2026/06/15,120,10,60230,121,000,000,June revenue allocation - Project A,1000.00,,USD,GL-JUN-001
+2026/06/15,120,10,60230,121,000,000,June revenue allocation offset,,1000.00,USD,GL-JUN-001
+2026/06/16,120,10,60230,121,000,000,Equipment expense,500.00,,USD,GL-JUN-002
+2026/06/16,120,10,60230,121,000,000,Equipment expense offset,,500.00,USD,GL-JUN-002
+2026/06/17,120,10,60230,121,000,000,Office supplies,250.00,,USD,GL-JUN-003
+2026/06/17,120,10,60230,121,000,000,Office supplies offset,,250.00,USD,GL-JUN-003

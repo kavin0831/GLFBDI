@@ -1,0 +1,2 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-BAD-DS-001,500,2026-04-24,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,FAKE Distribution Set That Does Not Exist,Distribution Set name doesn't match anything in Oracle,2026-04-24

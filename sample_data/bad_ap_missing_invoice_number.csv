@@ -1,0 +1,2 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+,1000,2026-04-23,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,1000,IN200 Standard Distribution,Missing Invoice Number — should be flagged in pre-validation,2026-04-23

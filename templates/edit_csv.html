@@ -245,35 +245,58 @@
       inputs.forEach(inp => arr.push(inp.value));
       rows.push(arr);
     });
-    statusEl.textContent = 'Saving…';
+    // Disable both save buttons + show spinner — prevents double-submit
+    const buttons = [document.getElementById('btn-save'),
+                     document.getElementById('btn-save-inline')];
+    const originalLabels = buttons.map(b => b ? b.innerHTML : '');
+    buttons.forEach(b => {
+      if (!b) return;
+      b.disabled = true;
+      b.innerHTML = '<span class="spinner"></span> Saving…';
+    });
+    statusEl.innerHTML = '<span class="spinner"></span> Saving &amp; queueing reprocess…';
     statusEl.className = 'edit-status';
+
+    function restore() {
+      buttons.forEach((b, i) => { if (b) { b.disabled = false; b.innerHTML = originalLabels[i]; } });
+    }
+
     return fetch('/request/' + REQ_ID + '/save_edit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ headers: headers, rows: rows }),
     })
-    .then(r => r.json())
-    .then(data => {
-      if (data.ok) {
-        statusEl.textContent = 'Saved as ' + data.filename + ' (v' + data.version + '). Reprocessing…';
-        statusEl.className = 'edit-status ok';
-        if (reprocessAfter) {
-          return fetch('/request/' + REQ_ID + '/reprocess', { method: 'POST' })
-            .then(() => { window.location.href = '/request/' + REQ_ID; });
-        }
-      } else {
+    .then(async r => {
+      var data;
+      try { data = await r.json(); }
+      catch (_) {
+        var txt = await r.text().catch(()=>'');
+        throw new Error('HTTP ' + r.status + ' — non-JSON response: ' + txt.slice(0, 300));
+      }
+      if (!data.ok) {
         statusEl.textContent = 'Save failed: ' + (data.error || 'unknown error');
         statusEl.className = 'edit-status error';
+        restore();
+        return;
+      }
+      statusEl.textContent = 'Saved as ' + data.filename + ' (v' + data.version + '). Reprocessing…';
+      statusEl.className = 'edit-status ok';
+      if (reprocessAfter) {
+        return fetch('/request/' + REQ_ID + '/reprocess', { method: 'POST' })
+          .then(() => { window.location.href = '/request/' + REQ_ID; });
       }
     })
     .catch(e => {
-      statusEl.textContent = 'Network error: ' + e;
+      statusEl.textContent = 'Network error: ' + e.message;
       statusEl.className = 'edit-status error';
+      restore();
     });
   }
 
-  document.getElementById('btn-save').addEventListener('click',        () => collectAndSave(true));
-  document.getElementById('btn-save-inline').addEventListener('click', () => collectAndSave(true));
+  document.getElementById('btn-save').addEventListener('click',
+    () => { if (!event.currentTarget.disabled) collectAndSave(true); });
+  document.getElementById('btn-save-inline').addEventListener('click',
+    () => { if (!event.currentTarget.disabled) collectAndSave(true); });
 })();
 </script>
 {% endblock %}

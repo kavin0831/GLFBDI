@@ -1,0 +1,3 @@
+Date,Company,CostCenter,Account,Product,Future,Intercompany,Description,Debit,Credit,Currency,Reference
+2026/06/20,120,10,60230,121,000,000,Debit-only entry — journal will not balance,1000.00,,USD,GL-UNBAL-001
+2026/06/20,120,10,60230,121,000,000,Another debit — total DR=1500 but CR=0,500.00,,USD,GL-UNBAL-001

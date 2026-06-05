@@ -1,0 +1,6 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Distribution Combination,Description,Accounting Date
+AP-MIX-001,500,2026-04-25,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,,Valid invoice — should be created,2026-04-25
+AP-MIX-002,300,2026-04-25,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,300,,,Line has neither Distribution Set nor Combination — should fail,2026-04-25
+,1000,2026-04-25,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,1000,IN200 Standard Distribution,,Missing Invoice Number — should fail,2026-04-25
+AP-MIX-003,200,2026-04-25,Nonexistent Co,7777777,XX,USD,STANDARD,Immediate,1,ITEM,200,IN200 Standard Distribution,,Invalid supplier — should be rejected by Oracle,2026-04-25
+AP-MIX-001,500,2026-04-25,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,,Duplicate invoice number within batch — should be rejected,2026-04-25

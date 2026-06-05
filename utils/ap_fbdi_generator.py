@@ -197,7 +197,12 @@ def _row_dict(record: dict, mappings: list[dict],
 
 def _gen_invoice_id_base(request_id: str) -> int:
     """Deterministic 9-digit Invoice ID base derived from request_id."""
-    return int(abs(hash(request_id)) % 900000000) + 100000000
+    # Use SHA-1 — Python's hash() is salted per-process, would mean the same
+    # request_id maps to different Invoice IDs after a server restart, breaking
+    # header↔line linking in re-submitted edits.
+    import hashlib as _h
+    n = int(_h.sha1((request_id or "").encode("utf-8")).hexdigest()[:9], 16)
+    return (n % 900000000) + 100000000
 
 
 def build_ap_rows(records: list[dict], mappings: list[dict],

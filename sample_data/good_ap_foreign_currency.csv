@@ -1,0 +1,4 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Payment Currency,Invoice Type,Payment Terms,Conversion Rate Type,Conversion Date,Conversion Rate,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-INR-001,15000,2026-04-10,ABC Consulting,1288,ABC US1,INR,INR,STANDARD,Immediate,Corporate,2026-04-10,83.50,1,ITEM,10000,IN200 Standard Distribution,India consulting - workshop A,2026-04-10
+AP-INR-001,15000,2026-04-10,ABC Consulting,1288,ABC US1,INR,INR,STANDARD,Immediate,Corporate,2026-04-10,83.50,2,ITEM,5000,IN200 Standard Distribution,India consulting - workshop B,2026-04-10
+AP-EUR-002,2500,2026-04-12,ABC Consulting,1288,ABC US1,EUR,EUR,STANDARD,Immediate,Corporate,2026-04-12,1.08,1,ITEM,2500,IN200 Standard Distribution,Europe consulting Q2,2026-04-12

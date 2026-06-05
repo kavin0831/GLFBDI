@@ -249,8 +249,17 @@ function delRows(kind) {
 async function saveAndReprocess() {
   var btn = document.getElementById('btn-save-reprocess');
   var status = document.getElementById('save-status');
+  if (btn.disabled) return;       // double-click guard
   btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving &amp; queueing…';
   status.style.display = 'inline-flex';
+
+  function restoreButton() {
+    btn.disabled = false;
+    btn.innerHTML = '&#128190; Save &amp; Reprocess';
+    status.style.display = 'none';
+  }
+
   try {
     var resp = await fetch('/request/{{ req.id }}/save_edit_ap', {
       method: 'POST',
@@ -260,16 +269,25 @@ async function saveAndReprocess() {
         line_rows: collectRows('line-table')
       })
     });
-    var data = await resp.json();
-    if (data.ok) {
+    var data;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      // Server returned non-JSON (likely an HTML 500 page)
+      var text = await resp.text().catch(function(){ return ''; });
+      alert('Save failed (HTTP ' + resp.status + '): server returned non-JSON.\n\n' +
+            text.slice(0, 400));
+      restoreButton(); return;
+    }
+    if (data && data.ok) {
       window.location.href = '/request/{{ req.id }}';
     } else {
-      alert('Save failed: ' + (data.error || 'unknown'));
-      btn.disabled = false; status.style.display = 'none';
+      alert('Save failed: ' + ((data && data.error) || 'unknown error'));
+      restoreButton();
     }
   } catch (e) {
     alert('Network error: ' + e);
-    btn.disabled = false; status.style.display = 'none';
+    restoreButton();
   }
 }
 </script>

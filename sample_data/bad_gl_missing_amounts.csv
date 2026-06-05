@@ -1,0 +1,4 @@
+Date,Company,CostCenter,Account,Product,Future,Intercompany,Description,Debit,Credit,Currency,Reference
+2026/06/24,120,10,60230,121,000,000,Row with no debit and no credit,,,USD,GL-NO-AMT-001
+2026/06/24,120,10,60230,121,000,000,Valid debit row,1000.00,,USD,GL-NO-AMT-002
+2026/06/24,120,10,60230,121,000,000,Valid credit row,,1000.00,USD,GL-NO-AMT-002

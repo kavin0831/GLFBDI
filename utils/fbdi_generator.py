@@ -145,9 +145,14 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
     jnl_name   = meta.get("journal_name","") or "GL_IMPORT"
     category   = meta.get("journal_category","Manual")
     source     = meta.get("journal_source","Manual")
-    # Must be numeric — Oracle matches this to ParameterList arg4
+    # Must be numeric AND deterministic across processes (Python's hash() is
+    # salted per-process — we'd get different values after each server restart,
+    # so submit_fbdi's group_id would not match the CSV's group_id, and the
+    # GL Journal Import job would silently find 0 matching rows).
+    import hashlib as _h
     _rid = meta.get("request_id", "") or ""
-    group_id = str(abs(hash(_rid)) % 999999999) if _rid else "1"
+    group_id = (str(int(_h.sha1(_rid.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
+                  if _rid else "1")
     now       = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
     # Fields that must be reformatted to YYYY/MM/DD if the source has them

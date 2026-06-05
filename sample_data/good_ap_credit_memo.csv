@@ -1,0 +1,3 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-CM-001,-250,2026-04-15,ABC Consulting,1288,ABC US1,USD,CREDIT,Immediate,1,ITEM,-250,IN200 Standard Distribution,Credit memo for invoice AP-GOOD-001,2026-04-15
+AP-CM-002,-150,2026-04-15,ABC Consulting,1288,ABC US1,USD,CREDIT,Immediate,1,ITEM,-150,IN200 Standard Distribution,Goods returned,2026-04-15

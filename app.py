@@ -1383,12 +1383,18 @@ async def edit_ap_request(request: Request, req_id: str):
 @app.post("/request/{req_id}/save_edit_ap")
 async def save_edit_ap(req_id: str, request: Request):
     """Save both header + line CSVs from the AP wizard and reprocess."""
-    import csv as _csv, io as _io
-    body = await request.json()
+    import csv as _csv, io as _io, traceback as _tb
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid JSON body: {e}"}, 400)
     hdr_rows  = body.get("hdr_rows")  or []
     line_rows = body.get("line_rows") or []
+    if not isinstance(hdr_rows, list) or not isinstance(line_rows, list):
+        return JSONResponse({"ok": False, "error": "hdr_rows / line_rows must be arrays"}, 400)
 
-    with SessionLocal() as db:
+    try:
+      with SessionLocal() as db:
         req = db.get(JournalRequest, req_id)
         if not req:
             return JSONResponse({"ok": False, "error": "not found"}, 404)
@@ -1400,7 +1406,6 @@ async def save_edit_ap(req_id: str, request: Request):
             buf = _io.StringIO(newline="")
             w = _csv.writer(buf, lineterminator="\n", quoting=_csv.QUOTE_MINIMAL)
             for r in rows:
-                # Strip the END if user already typed it; we'll add it back
                 if r and r[-1] == "END":
                     w.writerow(r)
                 else:
@@ -1435,11 +1440,13 @@ async def save_edit_ap(req_id: str, request: Request):
 
         # Also store the new ZIP as the source upload so the next reprocess
         # picks it up — workflow_ap's _process_prebuilt_ap_zip path will fire
-        store_uploaded_file(req_id, f"AP_Edited_v{new_version}.zip",
-                              zip_bytes, "manual_edit")
-        req.file_name = f"AP_Edited_v{new_version}.zip"
-        req.file_type = "zip"
-        req.file_size_bytes = len(zip_bytes)
+        try:
+            store_uploaded_file(req_id, f"AP_Edited_v{new_version}.zip", zip_bytes)
+            req.file_name = f"AP_Edited_v{new_version}.zip"
+            req.file_type = "zip"
+            req.file_size_bytes = len(zip_bytes)
+        except Exception as _e:
+            logger.warning("AP edit: store_uploaded_file failed: %s", _e)
 
         # Bump version + queue reprocess as AP
         req.version = new_version
@@ -1451,8 +1458,13 @@ async def save_edit_ap(req_id: str, request: Request):
         req.ap_rejections_json = []
         db.commit()
 
-    _dispatch_processing(req_id, "AP")
-    return JSONResponse({"ok": True, "version": new_version})
+      _dispatch_processing(req_id, "AP")
+      return JSONResponse({"ok": True, "version": new_version})
+    except Exception as e:
+        logger.error("save_edit_ap failed for %s: %s\n%s",
+                     req_id, e, _tb.format_exc())
+        return JSONResponse({"ok": False,
+                              "error": f"{type(e).__name__}: {e}"}, 500)
 
 
 @app.post("/request/{req_id}/save_edit")

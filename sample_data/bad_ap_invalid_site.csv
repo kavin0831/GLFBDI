@@ -1,0 +1,2 @@
+Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
+AP-BAD-SITE-001,400,2026-04-21,ABC Consulting,1288,WRONG_SITE_CODE,USD,STANDARD,Immediate,1,ITEM,400,IN200 Standard Distribution,Site WRONG_SITE_CODE does not exist for supplier 1288,2026-04-21
