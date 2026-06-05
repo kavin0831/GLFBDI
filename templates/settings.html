@@ -63,22 +63,17 @@
           <label class="form-label" for="fusion_password">Password <span class="required">*</span></label>
           <input type="password" class="form-control" id="fusion_password" name="fusion_password"
                  value="{{ cfg.fusion_password }}" required autocomplete="current-password">
-          <div class="form-hint">Stored in local SQLite (not transmitted elsewhere)</div>
+          <div class="form-hint">Encrypted with Fernet before storing in MongoDB</div>
         </div>
 
-        <div class="form-group">
-          <label class="form-label" for="fusion_document_account">Document Account <span class="required">*</span></label>
-          <input type="text" class="form-control" id="fusion_document_account" name="fusion_document_account"
-                 value="{{ cfg.fusion_document_account }}" required>
-          <div class="form-hint">e.g. fin$/generalLedger$/import$</div>
+        <div class="alert alert-info" style="font-size:12.5px;margin-top:8px">
+          GL &amp; AP import parameters (Document Account, ESS Job Name,
+          ParameterList, JobOptions, etc.) live in the
+          <strong>Transaction Type Config</strong> tab.
         </div>
-
-        <div class="form-group">
-          <label class="form-label" for="fusion_job_name">ESS Job Name</label>
-          <input type="text" class="form-control" id="fusion_job_name" name="fusion_job_name"
-                 value="{{ cfg.fusion_job_name }}"
-                 placeholder="oracle/apps/ess/financials/commonModules/shared/common/interfaceLoader/InterfaceLoaderController">
-        </div>
+        <!-- Hidden carriers so legacy fields still post -->
+        <input type="hidden" name="fusion_document_account" value="{{ cfg.fusion_document_account }}">
+        <input type="hidden" name="fusion_job_name" value="{{ cfg.fusion_job_name }}">
 
         <!-- Test connection -->
         <div style="margin-top:8px">
@@ -192,14 +187,51 @@
     <!-- GL config -->
     <div id="txn-gl" class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <h2 class="card-title">&#128202; GL Journal Import Configuration</h2>
-        <span class="badge badge-success">Active</span>
+        <h2 class="card-title">&#128202; GL Journal Import — importBulkData Parameters</h2>
       </div>
       <div class="card-body">
-        <div class="alert alert-info" style="font-size:13px">
-          GL fields are already set in the <strong>Fusion &amp; Gmail</strong> tab.
-          Document Account: <code>{{ cfg.fusion_document_account }}</code><br>
-          Job Name: <code style="word-break:break-all">{{ cfg.fusion_job_name }}</code>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Document Account <span class="required">*</span></label>
+            <input type="text" class="form-control" name="fusion_document_account_gl"
+                   value="{{ cfg.fusion_document_account }}">
+            <div class="form-hint">UCM account: <code>fin$/generalLedger$/import$</code></div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">ESS Job Name <span class="required">*</span></label>
+            <input type="text" class="form-control" name="fusion_job_name_gl"
+                   value="{{ cfg.fusion_job_name }}"
+                   placeholder="oracle/apps/ess/financials/generalLedger/programs/common,JournalImportLauncher">
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Callback URL</label>
+            <input type="text" class="form-control" name="gl_callback_url"
+                   value="{{ cfg.gl_callback_url or '#NULL' }}">
+            <div class="form-hint">Use <code>#NULL</code> for no callback</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Notification Code</label>
+            <input type="text" class="form-control" name="gl_notification_code"
+                   value="{{ cfg.gl_notification_code or '10' }}">
+            <div class="form-hint">Standard value: <code>10</code></div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0;grid-column:span 2">
+            <label class="form-label">Job Options</label>
+            <input type="text" class="form-control" name="gl_job_options"
+                   value="{{ cfg.gl_job_options or 'EnableEvent=Y,importOption=Y,purgeOption=Y,ExtractFileType!= NONE' }}">
+            <div class="form-hint">Comma-separated key=value options sent in importBulkData payload</div>
+          </div>
+
+        </div>
+        <div class="alert alert-info mt-3" style="font-size:13px;margin-bottom:0">
+          <strong>GL ParameterList (auto-built per submission):</strong>
+          <code style="font-size:11.5px;display:inline-block;background:#f0f2f5;padding:4px 8px;border-radius:4px;margin-top:6px;word-break:break-all">{LedgerName},Manual,{LedgerName},{GroupId},N,N,N</code>
+          — ledger name comes from the uploaded data file (resolved via REST).
         </div>
       </div>
     </div>
@@ -259,6 +291,39 @@
             <div class="form-hint">Auto-generated per request if blank</div>
           </div>
 
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Callback URL</label>
+            <input type="text" class="form-control" name="ap_callback_url"
+                   value="{{ cfg.ap_callback_url or '#NULL' }}">
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Notification Code</label>
+            <input type="text" class="form-control" name="ap_notification_code"
+                   value="{{ cfg.ap_notification_code or '10' }}">
+          </div>
+
+          <div class="form-group" style="margin-bottom:0;grid-column:span 2">
+            <label class="form-label">Job Options</label>
+            <input type="text" class="form-control" name="ap_job_options"
+                   value="{{ cfg.ap_job_options or 'InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL' }}">
+            <div class="form-hint">e.g. <code>InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL</code></div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">BIP Report Path</label>
+            <input type="text" class="form-control" name="ap_bip_report_path"
+                   value="{{ cfg.ap_bip_report_path or '/Financials/Payables/Invoices/ImportPayablesInvoices.xdo' }}">
+            <div class="form-hint">BIP catalog path — used to render the real Oracle PDF</div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">BIP Report Parameter Name</label>
+            <input type="text" class="form-control" name="ap_bip_report_param"
+                   value="{{ cfg.ap_bip_report_param or 'P_REQUEST_ID' }}">
+            <div class="form-hint">Parameter that receives the Import Payables Invoices request ID</div>
+          </div>
+
           <div class="form-group" style="margin-bottom:0;grid-column:span 2">
             <label class="form-label">Gmail Subject Filter (AP)</label>
             <input type="text" class="form-control" name="gmail_subject_filter_ap"
@@ -273,7 +338,9 @@
           Oracle's <code>finBusinessUnitsLOV</code> REST to get BU ID, Primary Ledger ID,
           and Legal Entity ID at submit time. The AP ParameterList becomes
           <br><code style="font-size:11.5px;display:inline-block;background:#f0f2f5;padding:4px 8px;border-radius:4px;margin-top:6px;word-break:break-all">#NULL,{BU_ID},N,{date},#NULL,#NULL,{pay_group},{source},{invoice_group},N,N,{ledger_id},#NULL,1</code>
-          <br>posted to <strong>APXIIMPT</strong> with BIP report PDF auto-rendered on completion.
+          <br>posted to <strong>APXIIMPT</strong>. After completion, the BIP runReport SOAP
+          service is called to render the <strong>real Oracle PDF</strong> of the
+          Import Payables Invoices report.
         </div>
       </div>
     </div>
@@ -308,6 +375,18 @@ document.getElementById('txn-type-select').addEventListener('change', function(e
   var v = e.target.value;
   document.getElementById('txn-gl').style.display = (v === 'GL') ? 'block' : 'none';
   document.getElementById('txn-ap').style.display = (v === 'AP') ? 'block' : 'none';
+});
+// Mirror the GL inputs in Transaction Type tab → the legacy fusion_* hidden carriers
+// so the existing /settings/save handler picks them up.
+document.getElementById('settings-form').addEventListener('submit', function(){
+  var glDoc = document.querySelector('input[name="fusion_document_account_gl"]');
+  var glJob = document.querySelector('input[name="fusion_job_name_gl"]');
+  if (glDoc) {
+    document.querySelector('input[name="fusion_document_account"]').value = glDoc.value;
+  }
+  if (glJob) {
+    document.querySelector('input[name="fusion_job_name"]').value = glJob.value;
+  }
 });
 </script>
 

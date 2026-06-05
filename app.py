@@ -647,6 +647,15 @@ async def save_settings(
     ap_pay_group:          str = Form(""),
     ap_invoice_group:      str = Form(""),
     gmail_subject_filter_ap: str = Form(""),
+    # importBulkData fixed params + BIP report
+    gl_callback_url:       str = Form(""),
+    gl_notification_code:  str = Form(""),
+    gl_job_options:        str = Form(""),
+    ap_callback_url:       str = Form(""),
+    ap_notification_code:  str = Form(""),
+    ap_job_options:        str = Form(""),
+    ap_bip_report_path:    str = Form(""),
+    ap_bip_report_param:   str = Form(""),
 ):
     with SessionLocal() as db:
         cfg = db.get(AppSettings, 1)
@@ -674,6 +683,15 @@ async def save_settings(
         if ap_pay_group:          cfg.ap_pay_group          = ap_pay_group
         if ap_invoice_group:      cfg.ap_invoice_group      = ap_invoice_group
         if gmail_subject_filter_ap: cfg.gmail_subject_filter_ap = gmail_subject_filter_ap
+        # importBulkData fixed params — overwrite even if blank so user can clear them
+        if gl_callback_url        is not None: cfg.gl_callback_url       = gl_callback_url       or "#NULL"
+        if gl_notification_code   is not None: cfg.gl_notification_code  = gl_notification_code  or "10"
+        if gl_job_options         is not None and gl_job_options.strip(): cfg.gl_job_options    = gl_job_options
+        if ap_callback_url        is not None: cfg.ap_callback_url       = ap_callback_url       or "#NULL"
+        if ap_notification_code   is not None: cfg.ap_notification_code  = ap_notification_code  or "10"
+        if ap_job_options         is not None and ap_job_options.strip(): cfg.ap_job_options    = ap_job_options
+        if ap_bip_report_path     is not None and ap_bip_report_path.strip():  cfg.ap_bip_report_path = ap_bip_report_path
+        if ap_bip_report_param    is not None and ap_bip_report_param.strip(): cfg.ap_bip_report_param = ap_bip_report_param
         cfg.updated_at             = datetime.now(timezone.utc)
         db.commit()
     return RedirectResponse("/settings?msg=Settings+saved+successfully", status_code=303)

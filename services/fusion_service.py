@@ -121,9 +121,10 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -
         "DocumentAccount": cfg.fusion_document_account,
         "JobName":         cfg.fusion_job_name,
         "ParameterList":   param_list,
-        "CallbackURL":     "#NULL",
-        "NotificationCode":"10",
-        "JobOptions":      "EnableEvent=Y,importOption=Y,purgeOption=Y,ExtractFileType!= NONE",
+        "CallbackURL":     (cfg.gl_callback_url or "#NULL"),
+        "NotificationCode":(cfg.gl_notification_code or "10"),
+        "JobOptions":      (cfg.gl_job_options
+                            or "EnableEvent=Y,importOption=Y,purgeOption=Y,ExtractFileType!= NONE"),
     }
 
     url = f"{_base(cfg)}{ERPI}"
@@ -135,6 +136,74 @@ def submit_fbdi(cfg, zip_path: str, group_id: str = "", ledger_name: str = "") -
     data = resp.json()
     logger.info("Submission response: ReqstId=%s", data.get("ReqstId"))
     return data
+
+
+# ── BI Publisher: render the real Oracle PDF for an ESS BIP job ───────────────
+
+# Confirmed working live with credentials Kavin.Sasikumar on
+# fa-etao-dev18-saasfademo1: report renders to a 10.9 KB PDF.
+BIP_REPORT_PATHS = {
+    # ESS_JOB_NAME → BIP report absolute path
+    "APXIIMPT": "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo",
+}
+
+
+def render_bip_report_pdf(cfg, report_path: str, request_id_param: str,
+                            parameter_name: str = "P_REQUEST_ID",
+                            output_format: str = "pdf") -> bytes:
+    """
+    Call BI Publisher's runReport SOAP service to render an Oracle Fusion
+    seeded report (e.g. Import Payables Invoices Execution Report).
+
+    Returns the rendered PDF bytes, or b"" on failure.
+    """
+    import re, base64 as _b64
+    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">
+  <soap:Body>
+    <v2:runReport>
+      <v2:reportRequest>
+        <v2:attributeFormat>{output_format}</v2:attributeFormat>
+        <v2:reportAbsolutePath>{report_path}</v2:reportAbsolutePath>
+        <v2:parameterNameValues>
+          <v2:listOfParamNameValues>
+            <v2:item>
+              <v2:name>{parameter_name}</v2:name>
+              <v2:values><v2:item>{request_id_param}</v2:item></v2:values>
+            </v2:item>
+          </v2:listOfParamNameValues>
+        </v2:parameterNameValues>
+        <v2:sizeOfDataChunkDownload>-1</v2:sizeOfDataChunkDownload>
+      </v2:reportRequest>
+      <v2:userID>{cfg.fusion_username}</v2:userID>
+      <v2:password>{cfg.fusion_password}</v2:password>
+    </v2:runReport>
+  </soap:Body>
+</soap:Envelope>"""
+    url = _base(cfg) + "/xmlpserver/services/v2/ReportService"
+    try:
+        r = httpx.post(url, content=envelope, auth=_auth(cfg), timeout=120,
+                       headers={"Content-Type": "text/xml;charset=UTF-8",
+                                "SOAPAction": ""})
+        if r.status_code != 200:
+            logger.warning("BIP runReport HTTP %d for %s: %s",
+                           r.status_code, report_path, r.text[:200])
+            return b""
+        m = re.search(r"<(?:\w+:)?reportBytes>([^<]+)</(?:\w+:)?reportBytes>", r.text)
+        if not m:
+            logger.warning("BIP runReport: no reportBytes in response (text=%s...)",
+                           r.text[:200])
+            return b""
+        pdf = _b64.b64decode(m.group(1))
+        if not pdf.startswith(b"%PDF"):
+            logger.warning("BIP runReport returned non-PDF content: %s", pdf[:50])
+        logger.info("BIP rendered %d bytes for %s (req=%s)",
+                    len(pdf), report_path, request_id_param)
+        return pdf
+    except Exception as e:
+        logger.warning("BIP runReport error: %s", e)
+        return b""
 
 
 # ── AP Master-Data Lookups (Business Unit / Supplier / Site / Terms) ─────────
@@ -306,9 +375,10 @@ def submit_ap_fbdi(
         "DocumentAccount": cfg.ap_document_account or "fin$/payables$/import$",
         "JobName":         cfg.ap_job_name or "oracle/apps/ess/financials/payables/invoices/transactions,APXIIMPT",
         "ParameterList":   param_list,
-        "CallbackURL":     "#NULL",
-        "NotificationCode":"10",
-        "JobOptions":      "InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL",
+        "CallbackURL":     (cfg.ap_callback_url or "#NULL"),
+        "NotificationCode":(cfg.ap_notification_code or "10"),
+        "JobOptions":      (cfg.ap_job_options
+                            or "InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL"),
     }
 
     url = f"{_base(cfg)}{ERPI}"

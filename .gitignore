@@ -47,3 +47,7 @@ boot.err
 storage/logs/
 storage/
 apinvoiceimporttest/post_*.py
+apinvoiceimporttest/probe_*.py
+apinvoiceimporttest/post_*.py
+apinvoiceimporttest/real_oracle_report_*.pdf
+apinvoiceimporttest/oracle_real_pdf.pdf

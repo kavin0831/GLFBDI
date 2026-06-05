@@ -388,21 +388,8 @@ def process_ap_request(request_id: str) -> None:
         _log(request_id, "INFO",
              f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
 
-    # Download all logs (parent + direct children + AP jobs)
-    try:
-        logs = download_ess_logs(get_settings(), eid)
-        zb = logs.get("zip_bytes")
-        if zb:
-            log_dir = STORAGE / "logs" / request_id
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_zip = log_dir / f"ess_logs_{eid}.zip"
-            log_zip.write_bytes(zb)
-            store_generated_file(request_id, "ess_log_v0",
-                                  log_zip.name, zb)
-            _db_update(request_id, ess_log_path=str(log_zip))
-            _log(request_id, "INFO", f"Downloaded {len(zb)} bytes of ESS logs")
-    except Exception as e:
-        _log(request_id, "WARN", f"Log download failed: {e}")
+    # Download logs from EVERY related ESS request (parent + JI + Report)
+    _download_all_ap_logs(request_id, eid, ap_jobs)
 
     # Also fetch the Import Payables Invoices Report PDF (if present in logs)
     try:
@@ -502,20 +489,8 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
         _log(request_id, "INFO",
              f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
 
-    # Download ESS logs (parent + AP children)
-    try:
-        logs = download_ess_logs(get_settings(), eids[0])
-        zb = logs.get("zip_bytes")
-        if zb:
-            log_dir = STORAGE / "logs" / request_id
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_zip = log_dir / f"ess_logs_{eids[0]}.zip"
-            log_zip.write_bytes(zb)
-            store_generated_file(request_id, "ess_log_v0", log_zip.name, zb)
-            _db_update(request_id, ess_log_path=str(log_zip))
-            _log(request_id, "INFO", f"Downloaded {len(zb)} bytes of ESS logs")
-    except Exception as e:
-        _log(request_id, "WARN", f"Log download failed: {e}")
+    # Download logs from EVERY related ESS request
+    _download_all_ap_logs(request_id, eids[0], all_ap_jobs)
 
     # Render Import Payables Invoices Report (BIP XML → HTML+PDF)
     try:
@@ -543,53 +518,127 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
 
 # ── Save AP Report PDF (Import Payables Invoices Report output) ─────────────
 
+def _download_all_ap_logs(request_id: str, parent_eid: str,
+                            ap_jobs: list[dict]) -> None:
+    """
+    Fetch ESS logs for every related request — the parent submission, plus
+    every "Import Payables Invoices" / "Report" job spawned downstream — and
+    combine them into a single ess_logs_<id>.zip with subdirectories per job.
+    """
+    import io as _io
+    cfg = get_settings()
+    combined: dict[str, bytes] = {}
+
+    # Build the list of request IDs (de-dup'd) — parent + every ap_job id
+    ids: list[str] = [str(parent_eid)]
+    for j in ap_jobs:
+        rid = str(j.get("request_id") or "")
+        if rid and rid not in ids: ids.append(rid)
+
+    for rid in ids:
+        try:
+            logs = download_ess_logs(cfg, rid)
+            zb = logs.get("zip_bytes")
+            if not zb:
+                continue
+            with _zipfile.ZipFile(_io.BytesIO(zb)) as zf:
+                for name in zf.namelist():
+                    key = f"{rid}/{name}" if not name.startswith(f"{rid}/") else name
+                    if key not in combined:
+                        combined[key] = zf.read(name)
+        except Exception as e:
+            logger.warning("Log fetch failed for %s: %s", rid, e)
+
+    if not combined:
+        _log(request_id, "WARN", "No ESS logs retrievable from Oracle")
+        return
+
+    out_buf = _io.BytesIO()
+    with _zipfile.ZipFile(out_buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for name, data in combined.items():
+            zf.writestr(name, data)
+    zip_bytes = out_buf.getvalue()
+
+    log_dir = STORAGE / "logs" / request_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_zip = log_dir / f"ess_logs_{parent_eid}.zip"
+    log_zip.write_bytes(zip_bytes)
+    store_generated_file(request_id, "ess_log_v0", log_zip.name, zip_bytes)
+    _db_update(request_id, ess_log_path=str(log_zip))
+    _log(request_id, "INFO",
+         f"Downloaded {len(zip_bytes)} bytes ESS logs across {len(ids)} job(s): {ids}")
+
+
 def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> None:
     """
-    Persist the AP Import Report. Oracle returns BI Publisher XML (not PDF) via
-    REST — we save:
-      - ap_report_pdf: a PDF rendered locally from the BIP XML (via reportlab)
-      - ap_report_xml: the raw BIP data XML
-      - ap_report_html: human-readable HTML for inline viewing
+    Persist the AP Import Report.
+
+    Strategy (in order):
+      1. Find the "Import Payables Invoices" job's request ID — that's the
+         P_REQUEST_ID parameter the seeded BIP report expects
+      2. Call BIP runReport SOAP with the seeded report path to get the REAL
+         Oracle-rendered PDF (10KB+ on success)
+      3. As a fallback, save the BIP data XML from the Report job for audit
+
+    Resulting MongoDB artifacts:
+      - ap_report_pdf  : real Oracle PDF (from BIP runReport)
+      - ap_report_xml  : BIP data XML (from ESS Report job output)
     """
+    from services.fusion_service import (BIP_REPORT_PATHS, render_bip_report_pdf)
+
+    # Find the Import Payables Invoices job — that's the one whose ID is the
+    # P_REQUEST_ID parameter for the BIP report
+    ji_req_id = ""
+    report_job_id = ""
     for j in ap_jobs:
-        if "Report" not in (j.get("name") or ""): continue
-        rid = j.get("request_id")
-        if not rid: continue
-        try:
-            logs = download_ess_logs(get_settings(), rid)
-            zb = logs.get("zip_bytes")
-            if not zb: continue
-            import io
-            xml_content = b""
-            with _zipfile.ZipFile(io.BytesIO(zb)) as zf:
-                for name in zf.namelist():
-                    n_lower = name.lower()
-                    if n_lower.endswith(".pdf") and len(zf.read(name)) > 200:
-                        # If Oracle ever does return a real PDF, prefer it
-                        store_generated_file(request_id, "ap_report_pdf",
-                                              Path(name).name, zf.read(name))
-                        _log(request_id, "INFO", f"Saved native AP PDF: {name}")
-                        return
-                    if n_lower.endswith(".xml") and b"<APXIIMPT" in zf.read(name)[:2000]:
-                        xml_content = zf.read(name)
+        name = (j.get("name") or "").strip()
+        if name == "Import Payables Invoices":
+            ji_req_id = j.get("request_id") or ji_req_id
+        elif "Report" in name:
+            report_job_id = j.get("request_id") or report_job_id
 
-            if not xml_content: return
-            store_generated_file(request_id, "ap_report_xml",
-                                  f"ap_report_{rid}.xml", xml_content)
-
-            # Build a friendly HTML + a PDF from the XML data
-            html, pdf = _render_ap_report_from_bip_xml(xml_content, request_id, rid)
-            if html:
-                store_generated_file(request_id, "ap_report_html",
-                                      f"ap_report_{rid}.html", html.encode("utf-8"))
-            if pdf:
-                store_generated_file(request_id, "ap_report_pdf",
-                                      f"ap_report_{rid}.pdf", pdf)
+    # 1. Fetch the real Oracle PDF via BIP SOAP
+    if ji_req_id:
+        cfg = get_settings()
+        report_path = (cfg.ap_bip_report_path
+                        or BIP_REPORT_PATHS.get("APXIIMPT")
+                        or "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo")
+        param_name  = cfg.ap_bip_report_param or "P_REQUEST_ID"
+        pdf = render_bip_report_pdf(cfg, report_path, ji_req_id, parameter_name=param_name)
+        if pdf and pdf.startswith(b"%PDF"):
+            store_generated_file(request_id, "ap_report_pdf",
+                                  f"ap_import_report_{ji_req_id}.pdf", pdf)
             _log(request_id, "INFO",
-                 f"Saved AP Import Report (XML+HTML+PDF) from request {rid}")
-            return
+                 f"Saved REAL Oracle PDF from BIP runReport ({len(pdf)} bytes, P_REQUEST_ID={ji_req_id})")
+        else:
+            _log(request_id, "WARN",
+                 f"BIP runReport returned no PDF for P_REQUEST_ID={ji_req_id} — "
+                 "user may lack BI Publisher access")
+    else:
+        _log(request_id, "WARN",
+             "Could not find 'Import Payables Invoices' job ID; skipping BIP PDF render")
+
+    # 2. Also save the BIP data XML for audit / debugging
+    if report_job_id:
+        try:
+            logs = download_ess_logs(get_settings(), report_job_id)
+            zb = logs.get("zip_bytes")
+            if zb:
+                import io
+                with _zipfile.ZipFile(io.BytesIO(zb)) as zf:
+                    for name in zf.namelist():
+                        n_lower = name.lower()
+                        if n_lower.endswith(".xml"):
+                            xml_content = zf.read(name)
+                            if b"<APXIIMPT" in xml_content[:2000]:
+                                store_generated_file(request_id, "ap_report_xml",
+                                                      f"ap_report_data_{report_job_id}.xml",
+                                                      xml_content)
+                                _log(request_id, "INFO",
+                                     f"Saved BIP data XML ({len(xml_content)} bytes)")
+                                break
         except Exception as e:
-            logger.warning("AP report extraction failed for %s: %s", rid, e)
+            logger.warning("BIP XML extraction failed: %s", e)
 
 
 def _render_ap_report_from_bip_xml(xml_bytes: bytes, request_id: str,

@@ -362,12 +362,22 @@ _DEFAULT_SETTINGS = {
     # ── AP (Payables Invoice Import) ─────────────────────────────────────────
     "ap_document_account":     "fin$/payables$/import$",
     "ap_job_name":             _AP_JOB,
-    "ap_business_unit_id":     "",            # numeric ID (e.g. 300000046987012)
-    "ap_business_unit_name":   "",            # human label (e.g. US1 Business Unit)
-    "ap_ledger_id":            "",            # numeric ID (e.g. 300000046975971)
+    "ap_business_unit_id":     "",
+    "ap_business_unit_name":   "",
+    "ap_ledger_id":            "",
     "ap_source":               "External",
     "ap_pay_group":            "1000",
-    "ap_invoice_group":        "",            # default Import Set token
+    "ap_invoice_group":        "",
+    # importBulkData fixed params — editable per transaction type
+    "gl_callback_url":         "#NULL",
+    "gl_notification_code":    "10",
+    "gl_job_options":          "EnableEvent=Y,importOption=Y,purgeOption=Y,ExtractFileType!= NONE",
+    "ap_callback_url":         "#NULL",
+    "ap_notification_code":    "10",
+    "ap_job_options":          "InterfaceDetails=1,ImportOption=Y,PurgeOption=Y,ExtractFileType=ALL",
+    # BIP report — for rendering real Oracle PDF
+    "ap_bip_report_path":      "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo",
+    "ap_bip_report_param":     "P_REQUEST_ID",
     # ── Gmail polling ────────────────────────────────────────────────────────
     "gmail_credentials_file":  "config/gmail_credentials.json",
     "gmail_token_file":        "config/gmail_token.json",
@@ -455,13 +465,15 @@ def init_db():
                 ]},
                 {"$set": {"gmail_token_file": "config/gmail_token.json"}},
             )
-            # Backfill AP-related setting fields if missing
-            ap_setonly = {k: v for k, v in _DEFAULT_SETTINGS.items() if k.startswith("ap_") or k == "gmail_subject_filter_ap"}
+            # Backfill AP/GL-related setting fields if missing
+            need_backfill = {k: v for k, v in _DEFAULT_SETTINGS.items()
+                              if k.startswith(("ap_", "gl_")) or k == "gmail_subject_filter_ap"}
             existing = mdb["app_settings"].find_one({"_id": "settings"}) or {}
-            missing  = {k: v for k, v in ap_setonly.items() if k not in existing}
+            missing  = {k: v for k, v in need_backfill.items() if k not in existing}
             if missing:
                 mdb["app_settings"].update_one({"_id": "settings"}, {"$set": missing})
-                logger.info("Backfilled %d AP setting fields", len(missing))
+                logger.info("Backfilled %d AP/GL setting fields: %s",
+                            len(missing), ", ".join(sorted(missing.keys())))
 
         # Backfill transaction_type='GL' on all existing journal_requests
         # so the dashboard tab filter works correctly.

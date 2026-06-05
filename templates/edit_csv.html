@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active = "dashboard" %}
 
-{% block title %}Edit Request {{ req.id[:8] }} — Oracle GL FBDI{% endblock %}
+{% block title %}Edit {{ 'AP Invoice' if req.transaction_type == 'AP' else 'GL Journal' }} {{ req.id[:8] }} — Oracle FBDI{% endblock %}
 {% block topbar_title %}
   <a href="/" style="color:#9ca3af;text-decoration:none;font-weight:400">Dashboard</a>
   <span style="color:#d1d5db;margin:0 8px">/</span>
@@ -68,6 +68,22 @@
     <span class="badge badge-default">v{{ version }}</span>
   </div>
   <div class="card-body">
+    {% if req.transaction_type == 'AP' %}
+    <div class="alert alert-info" style="font-size:13px;margin-bottom:14px">
+      <strong>&#128179; Editing an AP Invoice file.</strong>
+      {% if 'invoiceslineinterface' in (req.file_name or '').lower() or 'invoicelinesinterface' in (req.file_name or '').lower() %}
+        This is the <strong>lines</strong> CSV (ApInvoiceLinesInterface). Make sure
+        Invoice ID values still match the header CSV after editing.
+      {% elif 'invoicesinterface' in (req.file_name or '').lower() %}
+        This is the <strong>header</strong> CSV (ApInvoicesInterface). Make sure
+        Invoice ID values match the corresponding line CSV.
+      {% else %}
+        Each row is one invoice line; group by Invoice Number for header records.
+        Required per line: <code>Invoice Number</code>, <code>Amount</code>, and
+        EITHER <code>Distribution Combination</code> OR <code>Distribution Set</code>.
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="edit-toolbar">
       <button type="button" class="btn btn-outline btn-sm" id="btn-add">&#43; Add Row</button>
       <button type="button" class="btn btn-outline btn-sm" id="btn-delete" style="color:#c0392b;border-color:#f5c6cb">&#128465; Delete Selected</button>
