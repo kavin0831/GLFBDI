@@ -119,13 +119,20 @@ def validate_ap_invoices(
             except (ValueError, TypeError):
                 bad_idx.add(i); errs.append(f"Row {i+1}: bad Invoice Amount '{inv_amt}'")
 
-    # Cross-check: line sum == invoice amount per invoice
+    # Cross-check: line sum == invoice amount per invoice.
+    # Also mark all rows for that invoice as bad so the FBDI skips them.
     for inv_num, inv_amt in invoice_amounts.items():
         line_sum = line_sums.get(inv_num, 0.0)
         if abs(inv_amt - line_sum) > 0.01:
             errs.append(
-                f"Invoice {inv_num}: lines sum to {line_sum:.2f} but header says {inv_amt:.2f}"
+                f"Invoice {inv_num}: lines sum to {line_sum:.2f} "
+                f"but header amount is {inv_amt:.2f} (difference {abs(inv_amt-line_sum):.2f})"
             )
+            # Mark every row belonging to this invoice as bad
+            for i, r in enumerate(records):
+                n = _val(r, "*Invoice Number") or _val(r, "Invoice Number")
+                if n == inv_num:
+                    bad_idx.add(i)
 
     return sorted(bad_idx), errs
 
