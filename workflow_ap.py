@@ -24,6 +24,7 @@ from database import (
 from services.fusion_service import (
     analyze_ap_bip_xml, analyze_ess_logs, download_ess_logs,
     find_ap_import_jobs, get_ess_status, get_execution_details,
+    lookup_supplier, lookup_supplier_site,
     scheduled_processes_url, submit_ap_fbdi,
 )
 from services.ml_mapper import map_all_ap_columns
@@ -130,25 +131,91 @@ def validate_ap_invoices(
 
 
 def validate_ap_master_data(cfg, meta: dict, records: list[dict],
-                             mappings: list[dict]) -> list[str]:
+                             mappings: list[dict]) -> tuple[list[int], list[str]]:
     """
-    Light REST-based validation. Doesn't block submission — just records warnings
-    that get included in the process logs.
+    REST-based master-data validation against Oracle Fusion before submission.
 
-    - Supplier exists (looked up by number)
-    - Supplier site code is present (we don't verify against Oracle to keep this
-      fast; Oracle will reject during JI Child if invalid and the user sees the
-      log).
-    - Business Unit ID looks numeric
+    Validates per unique (Supplier Number/Name, Supplier Site) combination:
+      1. Supplier exists via GET /suppliers?q=SupplierNumber='{n}'
+      2. Supplier Site exists via GET /suppliers/{id}/child/sites?q=SupplierSite='{s}'
 
-    Returns a list of warning/error strings.
+    Returns (bad_row_indices, error_messages).
+    Rows for invoices with invalid supplier/site are flagged so they are
+    excluded from the FBDI file (same as structural validation failures).
     """
-    import re
-    warnings: list[str] = []
-    bu_id = (meta.get("ap_business_unit_id") or "").strip()
-    if not bu_id or not re.fullmatch(r"\d+", bu_id):
-        warnings.append(f"Business Unit ID '{bu_id}' is not numeric — Oracle expects a numeric ID")
-    return warnings
+    src_to_tgt = {m["source_field"]: m["target_field"]
+                  for m in mappings if m.get("target_field")}
+
+    def _val(rec, *targets):
+        for tgt in targets:
+            for s, t in src_to_tgt.items():
+                if t == tgt and rec.get(s) not in (None, ""):
+                    return str(rec[s]).strip()
+        return ""
+
+    # Collect unique (supplier_num_or_name, site) pairs and which invoice numbers
+    # they belong to — so we can batch the REST calls.
+    # Structure: {(sup_num, sup_name, site): {invoice_nums}}
+    combo_invoices: dict[tuple, set] = {}
+    inv_to_row_indices: dict[str, list[int]] = {}
+
+    for i, r in enumerate(records):
+        inv_num    = _val(r, "*Invoice Number", "Invoice Number")
+        sup_num    = _val(r, "**Supplier Number", "Supplier Number")
+        sup_name   = _val(r, "**Supplier Name",   "Supplier Name")
+        site       = _val(r, "*Supplier Site",     "Supplier Site")
+        key = (sup_num, sup_name, site)
+        combo_invoices.setdefault(key, set()).add(inv_num)
+        inv_to_row_indices.setdefault(inv_num, []).append(i)
+
+    bad_idx: set[int] = set()
+    errs: list[str] = []
+
+    # Cache lookup results to avoid hitting Oracle multiple times per supplier
+    supplier_cache: dict[str, dict] = {}   # sup_num or sup_name → {SupplierId, ...}
+    site_cache: dict[tuple, bool]   = {}   # (supplier_id, site) → valid?
+
+    for (sup_num, sup_name, site), inv_nums in combo_invoices.items():
+        inv_list = ", ".join(sorted(inv_nums)[:5])
+
+        # 1. Supplier lookup
+        cache_key = sup_num or sup_name
+        if cache_key not in supplier_cache:
+            supplier_cache[cache_key] = lookup_supplier(
+                cfg,
+                supplier_number=sup_num,
+                supplier_name=sup_name if not sup_num else "",
+            )
+        sup_info = supplier_cache[cache_key]
+
+        if not sup_info:
+            label = f"#{sup_num}" if sup_num else f'"{sup_name}"'
+            msg = (f"Supplier {label} not found in Oracle — "
+                   f"invoices: {inv_list}")
+            errs.append(msg)
+            for inv in inv_nums:
+                for idx in inv_to_row_indices.get(inv, []):
+                    bad_idx.add(idx)
+            continue   # no point checking site if supplier invalid
+
+        supplier_id = sup_info.get("SupplierId", "")
+
+        # 2. Supplier Site lookup (only if site is provided in the data)
+        if site and supplier_id:
+            site_key = (supplier_id, site)
+            if site_key not in site_cache:
+                site_info = lookup_supplier_site(cfg, supplier_id, site)
+                site_cache[site_key] = bool(site_info)
+            if not site_cache[(supplier_id, site)]:
+                msg = (f"Supplier site '{site}' not found for supplier "
+                       f"{sup_info.get('SupplierName','?')} (#{sup_num}) — "
+                       f"invoices: {inv_list}")
+                errs.append(msg)
+                for inv in inv_nums:
+                    for idx in inv_to_row_indices.get(inv, []):
+                        bad_idx.add(idx)
+
+    return sorted(bad_idx), errs
 
 
 # ── Multi-invoice ZIP handling ───────────────────────────────────────────────
@@ -190,19 +257,29 @@ def _stage_map(req_id: str, cols: list[str]) -> list[dict]:
 
 def _stage_validate(req_id: str, records: list[dict], mappings: list[dict],
                     meta: dict) -> tuple[list[int], list[str]]:
+    # Step 1: structural checks (amount, balance, distribution)
     _db_update(req_id, current_stage="VALIDATING")
     bad_idx, errs = validate_ap_invoices(records, mappings, meta)
-    md_warnings = validate_ap_master_data(get_settings(), meta, records, mappings)
-    for w in md_warnings:
-        _log(req_id, "WARN", w); errs.append(w)
-    for e in errs[:20]:
-        _log(req_id, "WARN" if "must have" in e or "amount must be > 0" in e else "INFO", e)
+
+    # Step 2: REST-based master-data checks (supplier + site) — blocks bad rows
+    _db_update(req_id, current_stage="VALIDATING (supplier/site check)")
+    _log(req_id, "INFO", "Validating supplier numbers and site codes against Oracle REST…")
+    cfg = get_settings()
+    md_bad_idx, md_errs = validate_ap_master_data(cfg, meta, records, mappings)
+    bad_idx = sorted(set(bad_idx) | set(md_bad_idx))
+    errs.extend(md_errs)
+
+    # Log all errors at correct level
+    for e in errs[:30]:
+        level = "ERROR" if any(k in e for k in ("not found", "does not exist",
+                               "Supplier", "must have", "amount must be > 0")) else "WARN"
+        _log(req_id, level, e)
 
     _db_update(req_id, total_rows=len(records), bad_rows=len(bad_idx),
                good_rows=len(records) - len(bad_idx),
                validation_json={"errors": errs, "bad_row_indices": bad_idx})
-    _log(req_id, "INFO" if not errs else "WARN",
-         f"Validation: {len(records)} rows, {len(bad_idx)} bad, {len(errs)} errors/warnings")
+    _log(req_id, "INFO" if not bad_idx else "WARN",
+         f"Validation: {len(records)} rows, {len(bad_idx)} bad, {len(errs)} error(s)")
     return bad_idx, errs
 
 

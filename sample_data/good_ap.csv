@@ -1,4 +1,4 @@
 Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
-AP-TEST-GOOD-A001,1000,2026-06-01,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,600,IN200 Standard Distribution,Consulting June week 1,2026-06-01
-AP-TEST-GOOD-A001,1000,2026-06-01,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,400,IN200 Standard Distribution,Consulting June week 2,2026-06-01
-AP-TEST-GOOD-A002,500,2026-06-02,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,Project review June,2026-06-02
+AP-SAMPLE-001,1000,2026-06-06,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,600,IN200 Standard Distribution,Consulting June week 1,2026-06-06
+AP-SAMPLE-001,1000,2026-06-06,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,400,IN200 Standard Distribution,Consulting June week 2,2026-06-06
+AP-SAMPLE-002,500,2026-06-06,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,Project review June,2026-06-06
