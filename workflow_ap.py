@@ -251,9 +251,15 @@ def _stage_submit(req_id: str, zip_path: Path, meta: dict) -> str | None:
     _db_update(req_id, current_stage="SUBMITTING")
     cfg = get_settings()
     try:
+        # Use resolved_import_set (set by build_ap_rows from data then config then auto)
+        # so ParameterList arg9 matches what was written into the CSV's Import Set column.
+        effective_group = (meta.get("resolved_import_set")
+                           or meta.get("ap_invoice_group")
+                           or f"BATCH_{req_id[:8]}")
+        _log(req_id, "INFO", f"Import Set / Invoice Group: {effective_group}")
         resp = submit_ap_fbdi(
             cfg, str(zip_path),
-            invoice_group=meta.get("ap_invoice_group") or f"BATCH_{req_id[:8]}",
+            invoice_group=effective_group,
             accounting_date=meta.get("accounting_date") or
                              datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             business_unit_name=meta.get("ap_business_unit_name") or cfg.ap_business_unit_name,
@@ -402,17 +408,24 @@ def process_ap_request(request_id: str) -> None:
     final = _stage_monitor(request_id, eid)
 
     # Discover downstream "Import Payables Invoices" requests. Poll actively
-    # rather than sleeping 30s — exit as soon as they appear (or after 60s).
+    # up to 90s — both the Import Payables Invoices AND Report jobs must appear.
     _db_update(request_id, current_stage="FINDING_AP_JOBS")
     _log(request_id, "INFO", "Searching for downstream AP Import jobs…")
     ap_jobs: list[dict] = []
-    for attempt in range(12):
-        ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=30)
-        if ap_jobs:
+    has_report_job = False
+    for attempt in range(18):      # 18 × 5s = 90s max
+        ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=40)
+        has_report_job = any("Report" in (j.get("name") or "") for j in ap_jobs)
+        if ap_jobs and has_report_job:
             _log(request_id, "INFO",
-                 f"Found {len(ap_jobs)} AP job(s) after {attempt*5}s")
+                 f"Found {len(ap_jobs)} AP job(s) incl. Report after {attempt*5}s")
             break
+        if ap_jobs and not has_report_job:
+            _log(request_id, "INFO",
+                 f"Found {len(ap_jobs)} AP job(s) — waiting for Report job…")
         time.sleep(5)
+    if not ap_jobs:
+        _log(request_id, "WARN", "AP child jobs not found in scan range — proceeding anyway")
     for j in ap_jobs:
         _log(request_id, "INFO",
              f"AP child job: {j['name']} rid={j['request_id']} status={j['status']}")
@@ -710,36 +723,66 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
         _log(request_id, "WARN",
              "Could not find 'Import Payables Invoices' job ID; skipping BIP PDF render")
 
-    # 2. Save the BIP data XML for audit AND analyze it to detect rejections
+    # 2. Save the BIP data XML for audit AND analyze it to detect rejections.
+    # Strategy: first try the Report job directly; if not found, scan ALL
+    # downloaded log files in the combined ZIP — ensures we catch rejections
+    # even when ap_jobs discovery was incomplete.
     bip_analysis: dict = {}
+
+    def _extract_bip_xml_from_zip(zb: bytes) -> bytes:
+        """Return first APXIIMPT BIP data XML found in a log ZIP, or b''."""
+        try:
+            import io as _io
+            with _zipfile.ZipFile(_io.BytesIO(zb)) as zf:
+                for name in sorted(zf.namelist()):  # sort for consistency
+                    if name.lower().endswith(".xml"):
+                        data = zf.read(name)
+                        if b"<APXIIMPT" in data[:2000]:
+                            return data
+        except Exception:
+            pass
+        return b""
+
+    # Try Report job first
     if report_job_id:
         try:
-            logs = download_ess_logs(get_settings(), report_job_id)
-            zb = logs.get("zip_bytes")
-            if zb:
-                import io
-                with _zipfile.ZipFile(io.BytesIO(zb)) as zf:
-                    for name in zf.namelist():
-                        n_lower = name.lower()
-                        if n_lower.endswith(".xml"):
-                            xml_content = zf.read(name)
-                            if b"<APXIIMPT" in xml_content[:2000]:
-                                store_generated_file(request_id, "ap_report_xml",
-                                                      f"ap_report_data_{report_job_id}.xml",
-                                                      xml_content)
-                                bip_analysis = analyze_ap_bip_xml(xml_content)
-                                _log(request_id, "INFO",
-                                     f"BIP XML: fetched={bip_analysis.get('fetched')}, "
-                                     f"created={bip_analysis.get('created')}, "
-                                     f"rejected={bip_analysis.get('rejected')}")
-                                for inv in bip_analysis.get("rejections", [])[:10]:
-                                    reasons = "; ".join(inv["reasons"]) or "—"
-                                    _log(request_id, "ERROR",
-                                         f"REJECTED  {inv['invoice_num']} (Supplier {inv['supplier']} "
-                                         f"#{inv['supplier_num']}, {inv['currency']} {inv['amount']}) — {reasons}")
-                                break
+            rpt_logs = download_ess_logs(get_settings(), report_job_id)
+            rpt_zb   = rpt_logs.get("zip_bytes")
+            xml_data = _extract_bip_xml_from_zip(rpt_zb) if rpt_zb else b""
+            if xml_data:
+                store_generated_file(request_id, "ap_report_xml",
+                                      f"ap_report_data_{report_job_id}.xml", xml_data)
+                bip_analysis = analyze_ap_bip_xml(xml_data)
         except Exception as e:
-            logger.warning("BIP XML extraction failed: %s", e)
+            logger.warning("BIP XML extraction failed (report job %s): %s", report_job_id, e)
+
+    # Fallback: scan the combined log ZIP stored in MongoDB for any APXIIMPT XML
+    if not bip_analysis:
+        try:
+            stored = get_generated_file(request_id, "ess_log_v0")
+            if stored:
+                fallback_zb, _ = stored
+                xml_data = _extract_bip_xml_from_zip(fallback_zb)
+                if xml_data:
+                    store_generated_file(request_id, "ap_report_xml",
+                                          f"ap_report_data_fallback.xml", xml_data)
+                    bip_analysis = analyze_ap_bip_xml(xml_data)
+                    _log(request_id, "INFO", "BIP XML found via fallback scan of combined log ZIP")
+        except Exception as e:
+            logger.warning("BIP XML fallback scan failed: %s", e)
+
+    # Log the BIP analysis results for visibility in HF logs
+    if bip_analysis:
+        _log(request_id, "INFO",
+             f"BIP XML: fetched={bip_analysis.get('fetched')}, "
+             f"created={bip_analysis.get('created')}, "
+             f"rejected={bip_analysis.get('rejected')}")
+        for inv in bip_analysis.get("rejections", [])[:10]:
+            reasons = "; ".join(inv.get("reasons") or []) or "—"
+            _log(request_id, "ERROR",
+                 f"REJECTED  {inv.get('invoice_num','?')} "
+                 f"(Supplier {inv.get('supplier','?')} #{inv.get('supplier_num','?')}, "
+                 f"{inv.get('currency','?')} {inv.get('amount','?')}) — {reasons}")
 
     return bip_analysis
 

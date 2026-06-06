@@ -223,11 +223,19 @@ def build_ap_rows(records: list[dict], mappings: list[dict],
       header_rows / line_rows are dicts keyed by Oracle FBDI column names.
       bad_rows are source records that failed validation.
     """
-    base       = _gen_invoice_id_base(str(meta.get("request_id", "")))
+    import hashlib as _hh
+    _rid = str(meta.get("request_id", ""))
+    base       = _gen_invoice_id_base(_rid)
     bu_name    = meta.get("ap_business_unit_name") or meta.get("business_unit", "")
     source     = meta.get("ap_source") or "External"
     pay_group  = meta.get("ap_pay_group") or "1000"
-    import_set = meta.get("ap_invoice_group") or ""
+    # Import Set: use from data first (picked up via mapping), then config,
+    # then auto-generate a deterministic one so ParameterList and CSV always agree.
+    _cfg_grp = meta.get("ap_invoice_group") or ""
+    import_set = _cfg_grp or (
+        "AP" + str(int(_hh.sha1(_rid.encode()).hexdigest()[:6], 16) % 1000000).zfill(6)
+        if _rid else "APBATCH"
+    )
     legal_ent  = meta.get("legal_entity") or ""
     bad_indices = set(meta.get("bad_row_indices", []))
 
@@ -291,9 +299,17 @@ def _build_flat(records, mappings, meta, base, bu_name, source, pay_group,
             hdr["*Payment Terms"]   = m.get("*Payment Terms") or m.get("Payment Terms") or "Immediate"
             hdr["Terms Date"]       = _fmt_date(m.get("Terms Date") or hdr["*Invoice Date"])
             hdr["Accounting Date"]  = _fmt_date(m.get("Accounting Date") or hdr["*Invoice Date"])
-            hdr["Payment Method"]   = m.get("Payment Method") or "CHECK"
-            hdr["Pay Group"]        = m.get("Pay Group") or "Standard"
-            hdr["Conversion Rate"]  = "1"
+            hdr["Payment Method"]           = m.get("Payment Method") or "CHECK"
+            hdr["Pay Group"]               = m.get("Pay Group") or "Standard"
+            hdr["Currency Conversion Type"] = (m.get("Currency Conversion Type")
+                                                or m.get("Conversion Rate Type") or "Corporate")
+            hdr["Currency Conversion Date"] = _fmt_date(
+                m.get("Currency Conversion Date") or m.get("Conversion Date")
+                or hdr["*Invoice Date"])
+            # Use mapped rate; empty string = Oracle resolves from GL daily rates table
+            _rate = (_to_amount(m.get("Currency Conversion Rate")
+                                or m.get("Conversion Rate") or "") or "")
+            hdr["Currency Conversion Rate"] = _rate
             hdr["Calculate Tax During Import"] = "N"
             headers.append(hdr)
 
@@ -312,6 +328,7 @@ def _build_flat(records, mappings, meta, base, bu_name, source, pay_group,
         line["Prorate Across All Item Lines"] = "N"
         lines.append(line)
 
+    meta["resolved_import_set"] = import_set   # tell caller what went into the CSV
     return headers, lines, bad
 
 
@@ -354,9 +371,17 @@ def _build_with_row_type(records, mappings, meta, base, bu_name, source,
             hdr["*Payment Terms"]   = m.get("*Payment Terms") or "Immediate"
             hdr["Terms Date"]       = _fmt_date(m.get("Terms Date") or hdr["*Invoice Date"])
             hdr["Accounting Date"]  = _fmt_date(m.get("Accounting Date") or hdr["*Invoice Date"])
-            hdr["Payment Method"]   = m.get("Payment Method") or "CHECK"
-            hdr["Pay Group"]        = m.get("Pay Group") or "Standard"
-            hdr["Conversion Rate"]  = "1"
+            hdr["Payment Method"]           = m.get("Payment Method") or "CHECK"
+            hdr["Pay Group"]               = m.get("Pay Group") or "Standard"
+            hdr["Currency Conversion Type"] = (m.get("Currency Conversion Type")
+                                                or m.get("Conversion Rate Type") or "Corporate")
+            hdr["Currency Conversion Date"] = _fmt_date(
+                m.get("Currency Conversion Date") or m.get("Conversion Date")
+                or hdr["*Invoice Date"])
+            # Use mapped rate; empty string = Oracle resolves from GL daily rates table
+            _rate = (_to_amount(m.get("Currency Conversion Rate")
+                                or m.get("Conversion Rate") or "") or "")
+            hdr["Currency Conversion Rate"] = _rate
             hdr["Calculate Tax During Import"] = "N"
             headers.append(hdr)
         elif rt in ("L", "LINE"):

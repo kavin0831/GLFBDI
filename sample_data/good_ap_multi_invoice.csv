@@ -1,5 +1,5 @@
 Invoice Number,Invoice Amount,Invoice Date,Supplier Name,Supplier Number,Supplier Site,Currency,Invoice Type,Payment Terms,Line Number,Line Type,Amount,Distribution Set,Description,Accounting Date
-AP-MULTI-001,750,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,First invoice line 1,2026-03-15
-AP-MULTI-001,750,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,250,IN200 Standard Distribution,First invoice line 2,2026-03-15
-AP-MULTI-002,1200,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,1200,IN200 Standard Distribution,Second invoice single line,2026-03-15
-AP-MULTI-003,400,2026-03-15,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,400,IN200 Standard Distribution,Third invoice single line,2026-03-15
+AP-TEST-MULTI-B001,750,2026-06-03,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,500,IN200 Standard Distribution,Invoice B001 line 1,2026-06-03
+AP-TEST-MULTI-B001,750,2026-06-03,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,2,ITEM,250,IN200 Standard Distribution,Invoice B001 line 2,2026-06-03
+AP-TEST-MULTI-B002,1200,2026-06-04,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,1200,IN200 Standard Distribution,Invoice B002 single line,2026-06-04
+AP-TEST-MULTI-B003,400,2026-06-05,ABC Consulting,1288,ABC US1,USD,STANDARD,Immediate,1,ITEM,400,IN200 Standard Distribution,Invoice B003 single line,2026-06-05
