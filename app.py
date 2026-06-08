@@ -1470,6 +1470,26 @@ async def edit_ap_request(request: Request, req_id: str):
                 # Build lookup: normalized_name → column index  (for hdr & line)
                 hdr_norm  = {_anorm(c): i for i, c in enumerate(hdr_columns)}
                 line_norm = {_anorm(c): i for i, c in enumerate(line_columns)}
+
+                # Add common short-name aliases so uploaded CSVs with abbreviated
+                # column headers still map correctly into the FBDI positional grid.
+                # "Currency" → Invoice Currency (idx 9);  "Payment Curr" → Payment Currency
+                for _alias, _full in [
+                    ("CURRENCY",        "INVOICECURRENCY"),
+                    ("CURR",            "INVOICECURRENCY"),
+                    ("PAYMENTCURR",     "PAYMENTCURRENCY"),
+                    ("INVOICETYPE",     "INVOICETYPE"),   # already matches but explicit
+                    ("TYPE",            "INVOICETYPE"),
+                    ("TERMS",           "PAYMENTTERMS"),
+                    ("PAYMENTTERM",     "PAYMENTTERMS"),
+                    ("LINEAMT",         "AMOUNT"),        # line column alias
+                    ("LINEAMOUNT",      "AMOUNT"),
+                    ("DISTRIBUTIONSET", "DISTRIBUTIONSET"),  # already matches
+                ]:
+                    if _alias not in hdr_norm and _full in hdr_norm:
+                        hdr_norm[_alias] = hdr_norm[_full]
+                    if _alias not in line_norm and _full in line_norm:
+                        line_norm[_alias] = line_norm[_full]
                 raw_norms = [_anorm(h) for h in raw_hdr_names]
 
                 # Pre-compute per-raw-col which FBDI hdr/line index each maps to

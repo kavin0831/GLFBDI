@@ -260,6 +260,16 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
 
     out["business_units"] = bu_names
 
+    # Detect "no data" condition: ESS succeeded but Oracle found nothing to import.
+    # Happens when the Import Set parameter doesn't match the CSV data, or the
+    # file was genuinely empty.
+    out["no_data"] = (
+        out["fetched"] == 0
+        and out["created"] == 0
+        and out["rejected"] == 0
+        and not out["rejections"]
+    )
+
     # Heuristic: treat partial imports as rejections even when C_INVOICES_REJECTED=0
     out["has_rejections"] = (
         out["rejected"] > 0
@@ -268,7 +278,12 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
         or (out["fetched"] > 0 and out["created"] < out["fetched"])
     )
 
-    if out["has_rejections"]:
+    if out["no_data"]:
+        out["summary"] = (
+            "Import Payables Invoices: 0 invoices fetched — Oracle found nothing to import. "
+            "The Import Set parameter may not match the data file, or the file was empty."
+        )
+    elif out["has_rejections"]:
         all_reasons = []
         for inv in out["rejections"]:
             all_reasons.extend(inv["reasons"])

@@ -293,7 +293,11 @@ def _build_flat(records, mappings, meta, base, bu_name, source, pay_group,
             hdr["Invoice Currency"] = m.get("Invoice Currency") or m.get("Currency") or "USD"
             hdr["Payment Currency"] = m.get("Payment Currency") or hdr["Invoice Currency"]
             hdr["Description"]      = m.get("Description") or ""
-            hdr["Import Set"]       = m.get("Import Set") or import_set
+            # Always use the versioned config import_set — never the per-row data value.
+            # This ensures the ESS ParameterList arg9 (invoice group) always matches
+            # the Import Set column in the CSV, preventing silent "0 fetched" failures
+            # when reprocessing with a version suffix (_v1, _v2, …).
+            hdr["Import Set"]       = import_set
             hdr["*Invoice Type"]    = m.get("*Invoice Type") or m.get("Invoice Type") or "STANDARD"
             hdr["Legal Entity"]     = m.get("Legal Entity") or legal_ent
             hdr["*Payment Terms"]   = m.get("*Payment Terms") or m.get("Payment Terms") or "Immediate"
@@ -365,7 +369,7 @@ def _build_with_row_type(records, mappings, meta, base, bu_name, source,
             hdr["Invoice Currency"] = m.get("Invoice Currency") or "USD"
             hdr["Payment Currency"] = m.get("Payment Currency") or hdr["Invoice Currency"]
             hdr["Description"]      = m.get("Description") or ""
-            hdr["Import Set"]       = m.get("Import Set") or import_set
+            hdr["Import Set"]       = import_set   # always use versioned config value
             hdr["*Invoice Type"]    = m.get("*Invoice Type") or "STANDARD"
             hdr["Legal Entity"]     = m.get("Legal Entity") or legal_ent
             hdr["*Payment Terms"]   = m.get("*Payment Terms") or "Immediate"

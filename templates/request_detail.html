@@ -9,7 +9,7 @@
 {% endblock %}
 
 {% block topbar_actions %}
-  {% set _failed_states = ['FAILED','VALIDATION_FAILED','IMPORT_ERRORS','ESS_FAILED','SUBMIT_REJECTED','SUBMIT_ERROR','PARSE_ERROR','PERIOD_CLOSED','REJECTED'] %}
+  {% set _failed_states = ['FAILED','VALIDATION_FAILED','IMPORT_ERRORS','ESS_FAILED','SUBMIT_REJECTED','SUBMIT_ERROR','PARSE_ERROR','PERIOD_CLOSED','REJECTED','NO_DATA_IMPORTED','IMPORT_REJECTED'] %}
   {% if req.status == 'FAILED' or req.current_stage in _failed_states %}
     <a href="/request/{{ req.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit &amp; Reprocess</a>
   {% endif %}

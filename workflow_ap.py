@@ -560,6 +560,25 @@ def process_ap_request(request_id: str) -> None:
                    ap_invoices_rejected = bip.get("rejected", 0),
                    ap_rejections_json   = bip.get("rejections", []))
 
+    # ── Special case: ESS says SUCCEEDED but BIP found 0 fetched/created/rejected ──
+    # This means the Import Set parameter in the ESS submission didn't match the
+    # value written in the FBDI CSV, so Oracle found nothing to import.
+    if bip.get("no_data") and bip.get("fetched") is not None:
+        _log(request_id, "ERROR",
+             "BIP report shows 0 invoices fetched, 0 created, 0 rejected — "
+             "no data was imported. Import Set mismatch or empty file.")
+        _db_update(request_id, status="FAILED",
+                   current_stage="NO_DATA_IMPORTED",
+                   stop_reason=(
+                       "Oracle processed the submission but found 0 invoices to import. "
+                       "The Import Set parameter submitted to ESS may not match the "
+                       "Import Set written in the FBDI CSV file. Check the AP Import Set "
+                       "in /settings (AP tab) and reprocess."
+                   ))
+        _send_ap_email(request_id, "failure", ap_jobs,
+                       "0 invoices fetched — Import Set mismatch or empty file")
+        return
+
     # Inner failure detection — ESS job status OR BIP rejection count
     inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
                        for j in ap_jobs) or bool(bip.get("has_rejections"))
