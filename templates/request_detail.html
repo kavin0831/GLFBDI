@@ -66,7 +66,10 @@
         </div>
         <div class="info-row">
           <div class="info-key">Source</div>
-          <div class="info-val">{{ req.sender_email or '—' }}</div>
+          <div class="info-val">
+            {% set _src = req.sender_email or '' %}
+            {% if not _src or _src == 'manual_upload' %}Manual Upload{% else %}{{ _src }}{% endif %}
+          </div>
         </div>
         {% if req.email_subject %}
         <div class="info-row">
@@ -391,14 +394,26 @@
                 </a>
               {% endif %}
             {% endfor %}
-            <a href="/request/{{ req.id }}/ap-report" target="_blank"
-               class="btn btn-outline" style="width:100%;text-align:left;color:#1a73e8;border-color:#b8d4f8">
-              &#128221; View AP Import Report (browser)
-            </a>
-            <a href="/download/{{ req.id }}/ap_report_pdf" class="btn btn-outline"
-               style="width:100%;text-align:left">
-              &#128229; Download AP Report PDF
-            </a>
+
+            {# ── AP Import Report — only show when the report file actually exists ── #}
+            {% set _ap_report_kinds = ['ap_report_html','ap_report_xml','ap_report_txt','ap_report_pdf'] %}
+            {% set ns_rpt = namespace(has_report=false, has_pdf=false) %}
+            {% for f in (all_files or []) %}
+              {% if f.kind in _ap_report_kinds %}{% set ns_rpt.has_report = true %}{% endif %}
+              {% if f.kind == 'ap_report_pdf' %}{% set ns_rpt.has_pdf = true %}{% endif %}
+            {% endfor %}
+            {% if ns_rpt.has_report %}{% set ns.has_any = true %}
+              <a href="/request/{{ req.id }}/ap-report" target="_blank"
+                 class="btn btn-outline" style="width:100%;text-align:left;color:#1a73e8;border-color:#b8d4f8">
+                &#128221; View AP Import Report (browser)
+              </a>
+            {% endif %}
+            {% if ns_rpt.has_pdf %}
+              <a href="/download/{{ req.id }}/ap_report_pdf" class="btn btn-outline"
+                 style="width:100%;text-align:left">
+                &#128229; Download AP Report PDF
+              </a>
+            {% endif %}
           {% else %}
             {# GL: GlInterface CSV — all versions #}
             {% for f in (all_files or []) | sort(attribute='kind') %}
