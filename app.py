@@ -1432,11 +1432,20 @@ async def edit_ap_request(request: Request, req_id: str):
     if hdr_cols_in_file: hdr_rows  = [hdr_cols_in_file]  + hdr_rows
     if line_cols_in_file: line_rows = [line_cols_in_file] + line_rows
 
+    # ── Fetch real validation errors to show in the UI ───────────────────────
+    import re as _re_ap_edit
+    val_errors: list[str] = []
+    try:
+        vj = getattr(req, "validation_json", None)
+        if vj and isinstance(vj, dict):
+            val_errors = vj.get("errors") or []
+    except Exception:
+        pass
+
     # ── Fallback: if no FBDI CSVs exist (all-failed validation before fix),
-    # load the original uploaded file so the user has data to edit. ──────────
+    # load the original uploaded file and map its columns into the FBDI grid
+    # positionally so the user has real data to edit immediately. ─────────────
     raw_fallback = False
-    raw_upload_columns: list[str] = []
-    raw_upload_rows: list[list[str]] = []
     if not hdr_rows:
         from database import get_uploaded_file as _get_orig
         orig_bytes = _get_orig(req_id)
@@ -1447,8 +1456,24 @@ async def edit_ap_request(request: Request, req_id: str):
             all_rows = [r for r in reader if any((c or "").strip() for c in r)]
             if all_rows:
                 raw_fallback = True
-                raw_upload_columns = all_rows[0]
-                raw_upload_rows    = all_rows[1:]
+                raw_headers = all_rows[0]
+                raw_data    = all_rows[1:]
+
+                # Map raw column names → AP_HEADER_COLUMNS positions by
+                # stripping * / ** prefixes and doing case-insensitive match.
+                def _anorm(s):
+                    return _re_ap_edit.sub(r'[^A-Z0-9]', '',
+                           _re_ap_edit.sub(r'^\*+', '', s).upper())
+                ap_norm_map  = {_anorm(c): i for i, c in enumerate(hdr_columns)}
+                raw_to_ap    = [ap_norm_map.get(_anorm(h)) for h in raw_headers]
+                mapped = []
+                for rrow in raw_data:
+                    fbdi = [""] * len(hdr_columns)
+                    for ri, ai in enumerate(raw_to_ap):
+                        if ai is not None and ri < len(rrow):
+                            fbdi[ai] = rrow[ri]
+                    mapped.append(fbdi)
+                hdr_rows = mapped   # inject into the grid
 
     version = int(getattr(req, "version", 0) or 0)
     return templates.TemplateResponse("edit_ap.html", {
@@ -1456,8 +1481,7 @@ async def edit_ap_request(request: Request, req_id: str):
         "hdr_columns":  hdr_columns,  "hdr_rows":  hdr_rows,
         "line_columns": line_columns, "line_rows": line_rows,
         "raw_fallback": raw_fallback,
-        "raw_upload_columns": raw_upload_columns,
-        "raw_upload_rows":    raw_upload_rows,
+        "val_errors":   val_errors,
     })
 
 

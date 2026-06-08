@@ -76,7 +76,21 @@
     </table>
   </div>
 </div>
-{% elif req.stop_reason %}
+{% elif val_errors %}
+<div class="card mb-3" style="border-color:#fca5a5">
+  <div class="card-header" style="background:#fff5f5;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+    <h2 class="card-title" style="color:#c0392b">&#9888; Validation Errors from Last Run ({{ val_errors | length }}) — fix the values below &amp; reprocess</h2>
+    <span style="font-size:11px;color:#9ca3af">click to expand/collapse</span>
+  </div>
+  <div style="padding:0;display:block">
+    <ul style="margin:0;padding:10px 10px 10px 28px;font-size:12.5px;color:#7f1d1d;list-style:disc;max-height:200px;overflow-y:auto">
+      {% for e in val_errors %}
+        <li style="padding:2px 0">{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% elif req.stop_reason and req.stop_reason != 'All rows failed validation. See process logs.' %}
 <div class="alert" style="background:#fff5f5;border:1px solid #fca5a5;border-radius:6px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:#7f1d1d">
   <strong>&#9888; Last run error:</strong> <span style="white-space:pre-wrap">{{ req.stop_reason[:600] }}</span>
 </div>
@@ -116,33 +130,11 @@
     </div>
 
     {% if raw_fallback %}
-    <div class="alert" style="background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:#78350f">
-      <strong>&#9432; No FBDI data found for this request.</strong>
-      All rows failed validation before the FBDI files were generated, so the
-      edit grid is empty. Your <strong>original uploaded file</strong> is shown
-      below for reference — copy the values into the edit grid above, fix any
-      issues, then click <em>Save &amp; Reprocess</em>.
-    </div>
-    <div class="card mb-3" style="border-color:#fcd34d">
-      <div class="card-header" style="background:#fffbeb">
-        <h2 class="card-title" style="color:#78350f">&#128196; Original Uploaded Data ({{ raw_upload_rows | length }} row(s))</h2>
-      </div>
-      <div class="edit-tablewrap" style="max-height:30vh">
-        <table>
-          <thead>
-            <tr>
-              {% for col in raw_upload_columns %}<th>{{ col }}</th>{% endfor %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in raw_upload_rows %}
-            <tr>
-              {% for cell in row %}<td style="padding:3px 6px;white-space:nowrap;font-family:monospace;font-size:11.5px">{{ cell }}</td>{% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+    <div class="alert" style="background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12.5px;color:#78350f">
+      <strong>&#9432; Data pre-filled from your original upload.</strong>
+      The FBDI files were not generated on the last run (all rows failed
+      validation). Your uploaded data has been mapped into the columns below —
+      fix the highlighted errors above, then click <em>Save &amp; Reprocess</em>.
     </div>
     {% endif %}
 
