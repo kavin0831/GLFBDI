@@ -1550,6 +1550,27 @@ async def edit_ap_request(request: Request, req_id: str):
                 line_rows = mapped_line
 
     version = int(getattr(req, "version", 0) or 0)
+
+    # ── Pre-stamp Import Set in the header grid so users see the correct value
+    # that will be submitted to Oracle.  Column 12 = "Import Set".
+    import re as _re_edit_is
+    _is_base_d = (getattr(req, "ap_invoice_group", None)
+                  or get_settings().ap_invoice_group
+                  or f"BATCH_{req_id[:8]}").rstrip()
+    _is_base_d = _re_edit_is.sub(r"_v\d+$", "", _is_base_d)
+    # The NEXT submission will be version+1, so stamp that value for clarity
+    _next_ver = version + 1
+    _display_is = f"{_is_base_d}_v{_next_ver}" if _next_ver > 0 else _is_base_d
+    _IS_COL_D = 12
+    stamped_hdr = []
+    for _r in hdr_rows:
+        _row = list(_r)
+        while len(_row) <= _IS_COL_D:
+            _row.append("")
+        _row[_IS_COL_D] = _display_is
+        stamped_hdr.append(_row)
+    hdr_rows = stamped_hdr
+
     return templates.TemplateResponse("edit_ap.html", {
         "request": request, "req": req, "version": version,
         "hdr_columns":  hdr_columns,  "hdr_rows":  hdr_rows,
@@ -1579,6 +1600,30 @@ async def save_edit_ap(req_id: str, request: Request):
             return JSONResponse({"ok": False, "error": "not found"}, 404)
         current_version = int(getattr(req, "version", 0) or 0)
         new_version = current_version + 1
+
+        # ── Force Import Set in every header row to the versioned config value ──
+        # Column 12 (0-based, no END sentinel) = "Import Set" in AP_HEADER_COLUMNS.
+        # The grid may contain the user's original Import Set value which won't
+        # match the versioned ESS parameter (e.g. "IN239_COE_IMP001_v1"), causing
+        # Oracle to find 0 invoices.  We always stamp with the versioned value.
+        import re as _re_is
+        cfg_is = get_settings()
+        _is_base = (getattr(req, "ap_invoice_group", None)
+                    or cfg_is.ap_invoice_group
+                    or f"BATCH_{req_id[:8]}").rstrip()
+        _is_base = _re_is.sub(r"_v\d+$", "", _is_base)
+        _versioned_is = f"{_is_base}_v{new_version}" if new_version > 0 else _is_base
+        _IS_COL = 12   # AP_HEADER_COLUMNS index of "Import Set" (no END)
+        fixed_hdr = []
+        for _r in hdr_rows:
+            _row = list(_r)
+            while len(_row) <= _IS_COL:
+                _row.append("")
+            _row[_IS_COL] = _versioned_is
+            fixed_hdr.append(_row)
+        hdr_rows = fixed_hdr
+        logger.info("save_edit_ap %s: forcing Import Set → %s in %d header row(s)",
+                    req_id[:8], _versioned_is, len(hdr_rows))
 
         # Write both CSVs (headerless, END sentinel per row)
         def _write(rows):
