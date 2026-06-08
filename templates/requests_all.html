@@ -11,8 +11,8 @@
 
 {% block content %}
 
-<!-- Stats row (identical to dashboard) -->
-<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">
+<!-- Stats row -->
+<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px">
   <div class="stat-card">
     <div class="stat-icon total">&#128202;</div>
     <div>
@@ -25,6 +25,13 @@
     <div>
       <div class="stat-value" style="color:#1e7e34">{{ success }}</div>
       <div class="stat-label">Succeeded</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon warning">&#9888;&#65039;</div>
+    <div>
+      <div class="stat-value" style="color:#856404">{{ warnings or 0 }}</div>
+      <div class="stat-label">With Warnings</div>
     </div>
   </div>
   <div class="stat-card">
@@ -45,18 +52,23 @@
 
 <!-- Filter bar -->
 <div class="card mb-3">
-  <div class="card-body" style="padding:14px 18px">
-    <form method="get" action="/requests" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+  <div class="card-body" style="padding:12px 16px">
+    <form method="get" action="/requests" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input type="search" name="q" value="{{ q or '' }}" placeholder="Search filename, sender, subject…"
-             class="form-control" style="flex:1;min-width:240px;max-width:420px">
-      <select name="status" class="form-control" style="max-width:180px">
+             class="form-control" style="flex:1;min-width:200px;max-width:340px">
+      <select name="txn" class="form-control" style="width:120px;flex-shrink:0">
+        <option value="">All Types</option>
+        <option value="GL" {% if txn_filter == 'GL' %}selected{% endif %}>GL Journal</option>
+        <option value="AP" {% if txn_filter == 'AP' %}selected{% endif %}>AP Invoice</option>
+      </select>
+      <select name="status" class="form-control" style="width:190px;flex-shrink:0">
         <option value="">All statuses</option>
-        {% for st in ['SUCCEEDED','FAILED','PROCESSING','RECEIVED'] %}
+        {% for st in ['SUCCEEDED','SUCCEEDED_WITH_WARNINGS','FAILED','PROCESSING','RECEIVED'] %}
           <option value="{{ st }}" {% if status_filter == st %}selected{% endif %}>{{ st }}</option>
         {% endfor %}
       </select>
       <button type="submit" class="btn btn-primary btn-sm">Filter</button>
-      {% if q or status_filter %}
+      {% if q or status_filter or txn_filter %}
         <a href="/requests" class="btn btn-outline btn-sm">Clear</a>
       {% endif %}
     </form>
@@ -66,16 +78,27 @@
 <!-- All requests table -->
 <div class="card">
   <div class="card-header">
-    <h2 class="card-title">&#128203; All Requests{% if q or status_filter %} (filtered){% endif %}</h2>
+    <h2 class="card-title">&#128203; All Requests{% if q or status_filter or txn_filter %} (filtered){% endif %}</h2>
     <span class="badge badge-default">{{ requests | length }} shown</span>
   </div>
 
   {% if requests %}
   <div class="table-wrap">
     <table>
+      <colgroup>
+        <col class="col-file">
+        <col class="col-type">
+        <col class="col-source">
+        <col class="col-status">
+        <col class="col-stage">
+        <col class="col-rows">
+        <col class="col-date">
+        <col class="col-actions">
+      </colgroup>
       <thead>
         <tr>
           <th>File</th>
+          <th>Type</th>
           <th>Source</th>
           <th>Status</th>
           <th>Stage</th>
@@ -86,53 +109,72 @@
       </thead>
       <tbody>
         {% for r in requests %}
+        {% set src = r.sender_email or '' %}
         <tr>
           <td>
-            <a href="/request/{{ r.id }}" style="color:#1a73e8;font-weight:500;text-decoration:none">
+            <a href="/request/{{ r.id }}" class="file-link" title="{{ r.file_name or '' }}">
               {{ r.file_name or '—' }}
             </a>
             {% if r.journal_name %}
-              <div class="small text-muted mt-1">{{ r.journal_name }}</div>
+              <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.journal_name }}</div>
             {% endif %}
           </td>
           <td>
-            <div style="font-size:13px">{{ r.sender_email or '—' }}</div>
+            {% set tt = r.transaction_type or 'GL' %}
+            {% if tt == 'AP' %}
+              <span class="badge badge-type-ap">AP</span>
+            {% else %}
+              <span class="badge badge-type-gl">GL</span>
+            {% endif %}
+          </td>
+          <td>
+            <div style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ src }}">
+              {% if not src or src == 'manual_upload' %}
+                <span style="color:#9ca3af">Manual Upload</span>
+              {% else %}
+                {{ src }}
+              {% endif %}
+            </div>
             {% if r.email_subject %}
-              <div class="small text-muted mt-1" title="{{ r.email_subject }}">
-                {{ r.email_subject[:40] }}{% if r.email_subject|length > 40 %}…{% endif %}
+              <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ r.email_subject }}">
+                {{ r.email_subject[:35] }}{% if r.email_subject|length > 35 %}…{% endif %}
               </div>
             {% endif %}
           </td>
           <td>
             {% set s = r.status %}
             {% if s == 'SUCCEEDED' %}
-              <span class="badge badge-success">&#10003; {{ s }}</span>
+              <span class="badge badge-success">&#10003; Succeeded</span>
+            {% elif s == 'SUCCEEDED_WITH_WARNINGS' %}
+              <span class="badge badge-warning">&#9888; Warnings</span>
             {% elif s == 'FAILED' %}
-              <span class="badge badge-failed">&#10007; {{ s }}</span>
-            {% elif s in ('RECEIVED', 'PROCESSING') %}
-              <span class="badge badge-running">&#9203; {{ s }}</span>
+              <span class="badge badge-failed">&#10007; Failed</span>
+            {% elif s == 'PROCESSING' %}
+              <span class="badge badge-running"><span class="spinner" style="width:10px;height:10px;border-width:2px"></span> Processing</span>
+            {% elif s == 'RECEIVED' %}
+              <span class="badge badge-received">&#128228; Received</span>
             {% else %}
               <span class="badge badge-default">{{ s }}</span>
             {% endif %}
           </td>
           <td>
-            <span class="pill">{{ r.current_stage or '—' }}</span>
+            <span class="pill" style="white-space:nowrap;max-width:100%;display:inline-block;overflow:hidden;text-overflow:ellipsis">{{ r.current_stage or '—' }}</span>
           </td>
           <td>
             {% if r.total_rows %}
-              <span title="Total rows">{{ r.total_rows }}</span>
+              {{ r.total_rows }}
               {% if r.bad_rows %}
-                <span class="small text-danger"> / {{ r.bad_rows }} bad</span>
+                <div class="small text-danger">{{ r.bad_rows }} bad</div>
               {% endif %}
             {% else %}
               <span class="text-muted">—</span>
             {% endif %}
           </td>
           <td>
-            <div style="font-size:12.5px;color:#6b7280">
+            <div style="font-size:12px;color:#6b7280;white-space:nowrap">
               {{ r.created_at.strftime('%d %b %Y') if r.created_at else '—' }}
             </div>
-            <div style="font-size:11.5px;color:#9ca3af">
+            <div style="font-size:11px;color:#9ca3af">
               {{ r.created_at.strftime('%H:%M') if r.created_at else '' }}
             </div>
           </td>
@@ -140,7 +182,7 @@
             <div class="d-flex gap-2">
               <a href="/request/{{ r.id }}" class="btn btn-outline btn-sm">View</a>
               {% if r.status == 'FAILED' %}
-                <a href="/request/{{ r.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit &amp; Reprocess</a>
+                <a href="/request/{{ r.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit</a>
               {% endif %}
             </div>
           </td>

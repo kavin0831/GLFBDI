@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active = "dashboard" %}
 
-{% block title %}Dashboard — Oracle GL FBDI{% endblock %}
+{% block title %}Dashboard — Oracle {{ txn }} FBDI{% endblock %}
 {% block topbar_title %}Dashboard{% endblock %}
 
 {% block topbar_actions %}
@@ -18,23 +18,17 @@
 {% set txn_active = txn or 'GL' %}
 
 <!-- GL / AP Tabs -->
-<div style="display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #e8ecf0">
-  <a href="/?txn=gl" style="padding:12px 24px;font-size:14px;font-weight:600;
-    text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
-    color:{% if txn_active == 'GL' %}var(--oracle-red){% else %}#6b7280{% endif %};
-    border-bottom-color:{% if txn_active == 'GL' %}var(--oracle-red){% else %}transparent{% endif %}">
+<div class="txn-tabs">
+  <a href="/?txn=gl" class="txn-tab {% if txn_active == 'GL' %}active{% endif %}">
     &#128202; GL Journal Requests
   </a>
-  <a href="/?txn=ap" style="padding:12px 24px;font-size:14px;font-weight:600;
-    text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-2px;
-    color:{% if txn_active == 'AP' %}var(--oracle-red){% else %}#6b7280{% endif %};
-    border-bottom-color:{% if txn_active == 'AP' %}var(--oracle-red){% else %}transparent{% endif %}">
+  <a href="/?txn=ap" class="txn-tab {% if txn_active == 'AP' %}active{% endif %}">
     &#128179; AP Invoice Requests
   </a>
 </div>
 
 <!-- Stats row -->
-<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">
+<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px">
   <div class="stat-card">
     <div class="stat-icon total">&#128202;</div>
     <div>
@@ -47,6 +41,13 @@
     <div>
       <div class="stat-value" style="color:#1e7e34">{{ success }}</div>
       <div class="stat-label">Succeeded</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon warning">&#9888;&#65039;</div>
+    <div>
+      <div class="stat-value" style="color:#856404">{{ warnings or 0 }}</div>
+      <div class="stat-label">With Warnings</div>
     </div>
   </div>
   <div class="stat-card">
@@ -69,16 +70,23 @@
 <div class="card">
   <div class="card-header">
     <h2 class="card-title">&#128203; Recent Requests</h2>
-    {% if running > 0 %}
-      <span style="font-size:12px;color:#9ca3af">
-        <span class="spinner"></span> Auto-refreshing…
-      </span>
-    {% endif %}
+    <div id="refresh-indicator" style="display:{% if running > 0 %}inline-flex{% else %}none{% endif %}">
+      <span class="auto-refresh-badge"><span class="spinner"></span> Auto-refreshing&hellip;</span>
+    </div>
   </div>
 
   {% if requests %}
   <div class="table-wrap">
     <table>
+      <colgroup>
+        <col class="col-file-d">
+        <col class="col-source-d">
+        <col class="col-status-d">
+        <col class="col-stage-d">
+        <col class="col-rows-d">
+        <col class="col-date-d">
+        <col class="col-actions-d">
+      </colgroup>
       <thead>
         <tr>
           <th>File</th>
@@ -90,55 +98,66 @@
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="requests-tbody">
         {% for r in requests %}
+        {% set src = r.sender_email or '' %}
         <tr>
           <td>
-            <a href="/request/{{ r.id }}" style="color:#1a73e8;font-weight:500;text-decoration:none">
+            <a href="/request/{{ r.id }}" class="file-link" title="{{ r.file_name or '' }}">
               {{ r.file_name or '—' }}
             </a>
             {% if r.journal_name %}
-              <div class="small text-muted mt-1">{{ r.journal_name }}</div>
+              <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.journal_name }}</div>
             {% endif %}
           </td>
           <td>
-            <div style="font-size:13px">{{ r.sender_email or '—' }}</div>
+            <div style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ src }}">
+              {% if not src or src == 'manual_upload' %}
+                <span style="color:#9ca3af">Manual Upload</span>
+              {% else %}
+                {{ src }}
+              {% endif %}
+            </div>
             {% if r.email_subject %}
-              <div class="small text-muted mt-1" title="{{ r.email_subject }}">
-                {{ r.email_subject[:40] }}{% if r.email_subject|length > 40 %}…{% endif %}
+              <div class="small text-muted mt-1" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ r.email_subject }}">
+                {{ r.email_subject[:35] }}{% if r.email_subject|length > 35 %}…{% endif %}
               </div>
             {% endif %}
           </td>
           <td>
             {% set s = r.status %}
             {% if s == 'SUCCEEDED' %}
-              <span class="badge badge-success">&#10003; {{ s }}</span>
+              <span class="badge badge-success">&#10003; Succeeded</span>
+            {% elif s == 'SUCCEEDED_WITH_WARNINGS' %}
+              <span class="badge badge-warning">&#9888; Warnings</span>
             {% elif s == 'FAILED' %}
-              <span class="badge badge-failed">&#10007; {{ s }}</span>
-            {% elif s in ('RECEIVED', 'PROCESSING') %}
-              <span class="badge badge-running">&#9203; {{ s }}</span>
+              <span class="badge badge-failed">&#10007; Failed</span>
+            {% elif s == 'PROCESSING' %}
+              <span class="badge badge-running"><span class="spinner" style="width:10px;height:10px;border-width:2px"></span> Processing</span>
+            {% elif s == 'RECEIVED' %}
+              <span class="badge badge-received">&#128228; Received</span>
             {% else %}
               <span class="badge badge-default">{{ s }}</span>
             {% endif %}
           </td>
           <td>
-            <span class="pill">{{ r.current_stage or '—' }}</span>
+            <span class="pill" style="white-space:nowrap;max-width:100%;display:inline-block;overflow:hidden;text-overflow:ellipsis">{{ r.current_stage or '—' }}</span>
           </td>
           <td>
             {% if r.total_rows %}
-              <span title="Total rows">{{ r.total_rows }}</span>
+              {{ r.total_rows }}
               {% if r.bad_rows %}
-                <span class="small text-danger"> / {{ r.bad_rows }} bad</span>
+                <div class="small text-danger">{{ r.bad_rows }} bad</div>
               {% endif %}
             {% else %}
               <span class="text-muted">—</span>
             {% endif %}
           </td>
           <td>
-            <div style="font-size:12.5px;color:#6b7280">
+            <div style="font-size:12px;color:#6b7280;white-space:nowrap">
               {{ r.created_at.strftime('%d %b %Y') if r.created_at else '—' }}
             </div>
-            <div style="font-size:11.5px;color:#9ca3af">
+            <div style="font-size:11px;color:#9ca3af">
               {{ r.created_at.strftime('%H:%M') if r.created_at else '' }}
             </div>
           </td>
@@ -146,7 +165,7 @@
             <div class="d-flex gap-2">
               <a href="/request/{{ r.id }}" class="btn btn-outline btn-sm">View</a>
               {% if r.status == 'FAILED' %}
-                <a href="/request/{{ r.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit &amp; Reprocess</a>
+                <a href="/request/{{ r.id }}/edit" class="btn btn-primary btn-sm">&#9998; Edit</a>
               {% endif %}
             </div>
           </td>
@@ -183,17 +202,12 @@ function pollNow(btn) {
     })
     .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
 }
-function retryRequest(id, btn) {
-  var orig = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>';
-  fetch('/api/retry/' + id, {method:'POST'})
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = orig; }
-      else { setTimeout(() => location.reload(), 600); }
-    })
-    .catch(() => { btn.disabled = false; btn.innerHTML = orig; });
-}
+
+// Smart auto-refresh: reload only when there are running jobs
+(function() {
+  var runningEl = document.getElementById('running-count');
+  if (!runningEl || parseInt(runningEl.textContent) <= 0) return;
+  setTimeout(function() { location.reload(); }, 8000);
+})();
 </script>
 {% endblock %}

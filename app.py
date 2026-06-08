@@ -260,6 +260,8 @@ async def dashboard(request: Request, txn: str = "gl"):
         total    = db.query(JournalRequest).filter_by(transaction_type=txn_u).count()
         success  = db.query(JournalRequest).filter(
             {"transaction_type": txn_u, "status": "SUCCEEDED"}).count()
+        warnings = db.query(JournalRequest).filter(
+            {"transaction_type": txn_u, "status": "SUCCEEDED_WITH_WARNINGS"}).count()
         failed   = db.query(JournalRequest).filter(
             {"transaction_type": txn_u, "status": "FAILED"}).count()
         running  = db.query(JournalRequest).filter(
@@ -267,26 +269,34 @@ async def dashboard(request: Request, txn: str = "gl"):
              "status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
     return templates.TemplateResponse("dashboard.html", {
         "request": request, "requests": reqs, "txn": txn_u,
-        "total": total, "success": success, "failed": failed, "running": running,
+        "total": total, "success": success, "warnings": warnings,
+        "failed": failed, "running": running,
         "gmail_ok": gmail_available(),
     })
 
 
 # ── All Requests page (no row limit, with filter + search) ────────────────────
 @app.get("/requests", response_class=HTMLResponse)
-async def all_requests(request: Request, q: str = "", status: str = ""):
-    """Full listing of every request, with optional search and status filter."""
+async def all_requests(request: Request, q: str = "", status: str = "", txn: str = ""):
+    """Full listing of every request, with optional search, status and txn filter."""
     q = (q or "").strip()
     status = (status or "").strip()
+    txn_f  = (txn or "").strip().upper()
+    if txn_f not in ("GL", "AP", ""):
+        txn_f = ""
     with SessionLocal() as db:
-        total    = db.query(JournalRequest).count()
-        success  = db.query(JournalRequest).filter_by(status="SUCCEEDED").count()
-        failed   = db.query(JournalRequest).filter_by(status="FAILED").count()
+        base: dict = {}
+        if txn_f:
+            base["transaction_type"] = txn_f
+        total    = db.query(JournalRequest).filter(base).count()
+        success  = db.query(JournalRequest).filter({**base, "status": "SUCCEEDED"}).count()
+        warnings = db.query(JournalRequest).filter({**base, "status": "SUCCEEDED_WITH_WARNINGS"}).count()
+        failed   = db.query(JournalRequest).filter({**base, "status": "FAILED"}).count()
         running  = db.query(JournalRequest).filter(
-            {"status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
+            {**base, "status": {"$in": ["RECEIVED", "PROCESSING"]}}).count()
 
         # Build the filter for the result list
-        mongo_filter: dict = {}
+        mongo_filter: dict = dict(base)
         if status:
             mongo_filter["status"] = status
         if q:
@@ -305,8 +315,9 @@ async def all_requests(request: Request, q: str = "", status: str = ""):
                   .all())
     return templates.TemplateResponse("requests_all.html", {
         "request": request, "requests": reqs,
-        "total": total, "success": success, "failed": failed, "running": running,
-        "q": q, "status_filter": status,
+        "total": total, "success": success, "warnings": warnings,
+        "failed": failed, "running": running,
+        "q": q, "status_filter": status, "txn_filter": txn_f,
     })
 
 
