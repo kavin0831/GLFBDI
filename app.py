@@ -1432,11 +1432,32 @@ async def edit_ap_request(request: Request, req_id: str):
     if hdr_cols_in_file: hdr_rows  = [hdr_cols_in_file]  + hdr_rows
     if line_cols_in_file: line_rows = [line_cols_in_file] + line_rows
 
+    # ── Fallback: if no FBDI CSVs exist (all-failed validation before fix),
+    # load the original uploaded file so the user has data to edit. ──────────
+    raw_fallback = False
+    raw_upload_columns: list[str] = []
+    raw_upload_rows: list[list[str]] = []
+    if not hdr_rows:
+        from database import get_uploaded_file as _get_orig
+        orig_bytes = _get_orig(req_id)
+        if orig_bytes:
+            import csv as _csv_mod, io as _io_mod
+            text = orig_bytes.decode("utf-8", errors="replace")
+            reader = _csv_mod.reader(_io_mod.StringIO(text))
+            all_rows = [r for r in reader if any((c or "").strip() for c in r)]
+            if all_rows:
+                raw_fallback = True
+                raw_upload_columns = all_rows[0]
+                raw_upload_rows    = all_rows[1:]
+
     version = int(getattr(req, "version", 0) or 0)
     return templates.TemplateResponse("edit_ap.html", {
         "request": request, "req": req, "version": version,
         "hdr_columns":  hdr_columns,  "hdr_rows":  hdr_rows,
         "line_columns": line_columns, "line_rows": line_rows,
+        "raw_fallback": raw_fallback,
+        "raw_upload_columns": raw_upload_columns,
+        "raw_upload_rows":    raw_upload_rows,
     })
 
 

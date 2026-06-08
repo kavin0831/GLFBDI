@@ -498,6 +498,13 @@ def process_ap_request(request_id: str) -> None:
     # Hard-fail if ALL rows are bad
     if len(bad_idx) >= len(records) and records:
         _log(request_id, "ERROR", "All AP rows failed validation — nothing to import")
+        # Still generate FBDI CSVs with bad_indices=[] so the edit wizard has
+        # data to show — user can fix values and reprocess from the edit page.
+        try:
+            _stage_generate(request_id, records, mappings, meta, [])
+        except Exception as _gen_err:
+            _log(request_id, "WARN",
+                 f"Could not pre-generate edit draft: {_gen_err}")
         _db_update(request_id, status="FAILED",
                    current_stage="VALIDATION_FAILED",
                    stop_reason="All rows failed validation. See process logs.")
