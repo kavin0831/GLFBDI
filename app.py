@@ -1443,10 +1443,13 @@ async def edit_ap_request(request: Request, req_id: str):
         pass
 
     # ── Fallback: if no FBDI CSVs exist (all-failed validation before fix),
-    # load the original uploaded file and map its columns into the FBDI grid
-    # positionally so the user has real data to edit immediately. ─────────────
+    # load the original uploaded file and map its columns into BOTH grids.
+    # The flat AP CSV has header + line columns in each row:
+    #   - hdr_rows: one row per unique Invoice Number (deduplicated)
+    #   - line_rows: one row per source row (all lines)
+    # Invoice IDs are generated sequentially so headers and lines stay linked.
     raw_fallback = False
-    if not hdr_rows:
+    if not hdr_rows and not line_rows:
         from database import get_uploaded_file as _get_orig
         orig_bytes = _get_orig(req_id)
         if orig_bytes:
@@ -1454,26 +1457,77 @@ async def edit_ap_request(request: Request, req_id: str):
             text = orig_bytes.decode("utf-8", errors="replace")
             reader = _csv_mod.reader(_io_mod.StringIO(text))
             all_rows = [r for r in reader if any((c or "").strip() for c in r)]
-            if all_rows:
+            if len(all_rows) >= 2:
                 raw_fallback = True
-                raw_headers = all_rows[0]
-                raw_data    = all_rows[1:]
+                raw_hdr_names = all_rows[0]
+                raw_data      = all_rows[1:]
 
-                # Map raw column names → AP_HEADER_COLUMNS positions by
-                # stripping * / ** prefixes and doing case-insensitive match.
                 def _anorm(s):
+                    """Normalize column name: strip leading *, uppercase, alphanum only."""
                     return _re_ap_edit.sub(r'[^A-Z0-9]', '',
                            _re_ap_edit.sub(r'^\*+', '', s).upper())
-                ap_norm_map  = {_anorm(c): i for i, c in enumerate(hdr_columns)}
-                raw_to_ap    = [ap_norm_map.get(_anorm(h)) for h in raw_headers]
-                mapped = []
+
+                # Build lookup: normalized_name → column index  (for hdr & line)
+                hdr_norm  = {_anorm(c): i for i, c in enumerate(hdr_columns)}
+                line_norm = {_anorm(c): i for i, c in enumerate(line_columns)}
+                raw_norms = [_anorm(h) for h in raw_hdr_names]
+
+                # Pre-compute per-raw-col which FBDI hdr/line index each maps to
+                raw_to_hdr  = [hdr_norm.get(n)  for n in raw_norms]
+                raw_to_line = [line_norm.get(n) for n in raw_norms]
+
+                # Find Invoice Number column in raw upload (for dedup + ID gen)
+                inv_num_ri = next(
+                    (i for i, n in enumerate(raw_norms) if n == "INVOICENUMBER"),
+                    None
+                )
+
+                # Assign sequential Invoice IDs (1-based) per unique invoice
+                inv_id_map: dict[str, str] = {}
                 for rrow in raw_data:
-                    fbdi = [""] * len(hdr_columns)
-                    for ri, ai in enumerate(raw_to_ap):
+                    inv_num = (rrow[inv_num_ri].strip()
+                               if inv_num_ri is not None and inv_num_ri < len(rrow)
+                               else "")
+                    if inv_num and inv_num not in inv_id_map:
+                        inv_id_map[inv_num] = str(len(inv_id_map) + 1)
+
+                # ── Build hdr_rows: one row per unique invoice number ──────
+                seen_inv: set = set()
+                line_num_counter: dict[str, int] = {}
+                mapped_hdr  = []
+                mapped_line = []
+
+                for rrow in raw_data:
+                    inv_num = (rrow[inv_num_ri].strip()
+                               if inv_num_ri is not None and inv_num_ri < len(rrow)
+                               else "")
+                    inv_id = inv_id_map.get(inv_num, str(len(seen_inv) + 1))
+
+                    # --- header row (one per unique invoice) ---
+                    if inv_num not in seen_inv:
+                        seen_inv.add(inv_num)
+                        fbdi_h = [""] * len(hdr_columns)
+                        for ri, ai in enumerate(raw_to_hdr):
+                            if ai is not None and ri < len(rrow):
+                                fbdi_h[ai] = rrow[ri].strip()
+                        fbdi_h[0] = inv_id   # *Invoice ID
+                        mapped_hdr.append(fbdi_h)
+
+                    # --- line row (one per source row) ---
+                    fbdi_l = [""] * len(line_columns)
+                    for ri, ai in enumerate(raw_to_line):
                         if ai is not None and ri < len(rrow):
-                            fbdi[ai] = rrow[ri]
-                    mapped.append(fbdi)
-                hdr_rows = mapped   # inject into the grid
+                            fbdi_l[ai] = rrow[ri].strip()
+                    fbdi_l[0] = inv_id   # *Invoice ID must match header
+                    if not fbdi_l[1]:    # Line Number default
+                        line_num_counter[inv_id] = line_num_counter.get(inv_id, 0) + 1
+                        fbdi_l[1] = str(line_num_counter[inv_id])
+                    if not fbdi_l[2]:    # *Line Type default
+                        fbdi_l[2] = "ITEM"
+                    mapped_line.append(fbdi_l)
+
+                hdr_rows  = mapped_hdr
+                line_rows = mapped_line
 
     version = int(getattr(req, "version", 0) or 0)
     return templates.TemplateResponse("edit_ap.html", {
