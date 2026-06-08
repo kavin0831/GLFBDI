@@ -612,6 +612,22 @@ def get_log_files_meta(request_id: str) -> dict:
         return {}
 
 
+def get_log_file(request_id: str, key: str) -> tuple[bytes, str] | None:
+    """Return (bytes, filename) for a stored log file, or None if not found."""
+    try:
+        doc = _mdb()["process_logs"].find_one({"_id": request_id},
+                                               {f"files.{key}": 1})
+        if not doc:
+            return None
+        entry = (doc.get("files") or {}).get(key)
+        if not entry or not entry.get("content_b64"):
+            return None
+        raw = base64.b64decode(entry["content_b64"])
+        return raw, entry.get("filename", key)
+    except Exception:
+        return None
+
+
 # ── Uploaded file storage (journal source files) ─────────────────────────────
 
 def store_uploaded_file(req_id: str, filename: str, content: bytes):

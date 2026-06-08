@@ -337,39 +337,60 @@
         <h2 class="card-title">&#128229; Downloads</h2>
       </div>
       <div class="card-body">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          {# Original upload — use namespace so the inner {% set %} survives outside the loop #}
-          {% set ns = namespace(orig=none) %}
+        <div style="display:flex;flex-direction:column;gap:8px">
+
+          {# ── Original upload ── #}
+          {% set ns = namespace(orig=none, has_any=false) %}
           {% for f in all_files or [] %}{% if f.kind == 'original' %}{% set ns.orig = f %}{% endif %}{% endfor %}
-          {% if ns.orig %}
+          {% if ns.orig %}{% set ns.has_any = true %}
             <a href="/request/{{ req.id }}/download/{{ ns.orig.filename }}"
                class="btn btn-outline" style="width:100%;text-align:left">
-              &#128206; Original (v0) — {{ ns.orig.filename }}
+              &#128206; Original upload — {{ ns.orig.filename }}
             </a>
           {% endif %}
 
-          {# Edited versions, sorted by version number #}
-          {% set _edits = [] %}
-          {% for f in all_files or [] %}{% if f.kind.startswith('edited_csv_v') %}{% set _ = _edits.append(f) %}{% endif %}{% endfor %}
-          {% for f in _edits | sort(attribute='kind') %}
-            <a href="/request/{{ req.id }}/download/{{ f.filename }}"
-               class="btn btn-outline" style="width:100%;text-align:left">
-              &#9998; {{ f.filename }}
+          {# ── GL: edited versions ── #}
+          {% for f in (all_files or []) | sort(attribute='kind') %}
+            {% if f.kind.startswith('edited_csv_v') %}{% set ns.has_any = true %}
+              <a href="/request/{{ req.id }}/download/{{ f.filename }}"
+                 class="btn btn-outline" style="width:100%;text-align:left">
+                &#9998; {{ f.filename }} <span style="color:#6b7280;font-size:11px">({{ f.kind }})</span>
+              </a>
+            {% endif %}
+          {% endfor %}
+
+          {# ── FBDI ZIPs — all versions ── #}
+          {% set _zips = [] %}
+          {% for f in all_files or [] %}
+            {% if f.kind == 'fbdi_zip' or (f.kind.startswith('fbdi_zip_v') and '_p' not in f.kind) %}
+              {% set _ = _zips.append(f) %}
+            {% endif %}
+          {% endfor %}
+          {% for f in _zips | sort(attribute='kind') %}{% set ns.has_any = true %}
+            <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+               class="btn btn-success" style="width:100%;text-align:left">
+              &#128230; {{ f.filename }} <span style="font-size:11px;opacity:.8">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
             </a>
           {% endfor %}
 
-          {% if req.fbdi_zip_path %}
-            <a href="/download/{{ req.id }}/zip" class="btn btn-success" style="width:100%;text-align:left">
-              &#128230; {% if req.transaction_type == 'AP' %}ApInvoicesImport.zip{% else %}GlInterface.zip{% endif %} (FBDI)
-            </a>
-          {% endif %}
+          {# ── AP: header + line CSVs — all versions ── #}
           {% if req.transaction_type == 'AP' %}
-            <a href="/download/{{ req.id }}/ap_hdr_csv" class="btn btn-outline" style="width:100%;text-align:left">
-              &#128196; ApInvoicesInterface.csv (headers)
-            </a>
-            <a href="/download/{{ req.id }}/ap_line_csv" class="btn btn-outline" style="width:100%;text-align:left">
-              &#128196; ApInvoiceLinesInterface.csv (lines)
-            </a>
+            {% for f in (all_files or []) | sort(attribute='kind') %}
+              {% if f.kind.startswith('ap_hdr_csv_v') %}{% set ns.has_any = true %}
+                <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+                   class="btn btn-outline" style="width:100%;text-align:left">
+                  &#128196; {{ f.filename }} <span style="color:#6b7280;font-size:11px">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
+                </a>
+              {% endif %}
+            {% endfor %}
+            {% for f in (all_files or []) | sort(attribute='kind') %}
+              {% if f.kind.startswith('ap_line_csv_v') %}{% set ns.has_any = true %}
+                <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+                   class="btn btn-outline" style="width:100%;text-align:left">
+                  &#128196; {{ f.filename }} <span style="color:#6b7280;font-size:11px">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
+                </a>
+              {% endif %}
+            {% endfor %}
             <a href="/request/{{ req.id }}/ap-report" target="_blank"
                class="btn btn-outline" style="width:100%;text-align:left;color:#1a73e8;border-color:#b8d4f8">
               &#128221; View AP Import Report (browser)
@@ -378,22 +399,39 @@
                style="width:100%;text-align:left">
               &#128229; Download AP Report PDF
             </a>
-          {% elif req.fbdi_csv_path %}
-            <a href="/download/{{ req.id }}/csv" class="btn btn-outline" style="width:100%;text-align:left">
-              &#128196; GlInterface.csv
-            </a>
+          {% else %}
+            {# GL: GlInterface CSV — all versions #}
+            {% for f in (all_files or []) | sort(attribute='kind') %}
+              {% if f.kind.startswith('fbdi_csv_v') or f.kind == 'fbdi_csv' %}{% set ns.has_any = true %}
+                <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+                   class="btn btn-outline" style="width:100%;text-align:left">
+                  &#128196; {{ f.filename }} <span style="color:#6b7280;font-size:11px">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
+                </a>
+              {% endif %}
+            {% endfor %}
           {% endif %}
-          {% if req.bad_data_csv_path %}
-            <a href="/download/{{ req.id }}/bad" class="btn btn-outline" style="color:#c0392b;border-color:#f5c6cb;width:100%;text-align:left">
-              &#9888; bad_data.csv ({{ req.bad_rows or '' }} rows)
-            </a>
-          {% endif %}
-          {% if req.ess_log_path %}
-            <a href="/download/{{ req.id }}/log" class="btn btn-outline" style="width:100%;text-align:left">
-              &#128196; ESS Log ZIP
-            </a>
-          {% endif %}
-          {% if not ns.orig and not _edits and not req.fbdi_zip_path and not req.fbdi_csv_path and not req.bad_data_csv_path and not req.ess_log_path %}
+
+          {# ── Bad data — all versions ── #}
+          {% for f in (all_files or []) | sort(attribute='kind') %}
+            {% if f.kind.startswith('bad_csv_v') or f.kind == 'bad_csv' %}{% set ns.has_any = true %}
+              <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+                 class="btn btn-outline" style="color:#c0392b;border-color:#f5c6cb;width:100%;text-align:left">
+                &#9888; {{ f.filename }} <span style="color:#c0392b;font-size:11px">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
+              </a>
+            {% endif %}
+          {% endfor %}
+
+          {# ── ESS log ZIPs — all versions ── #}
+          {% for f in (all_files or []) | sort(attribute='kind') %}
+            {% if f.kind.startswith('ess_log_v') or f.kind == 'ess_log' %}{% set ns.has_any = true %}
+              <a href="/request/{{ req.id }}/dl/kind/{{ f.kind }}"
+                 class="btn btn-outline" style="width:100%;text-align:left">
+                &#128196; {{ f.filename }} <span style="color:#6b7280;font-size:11px">({{ f.kind }}{% if f.size_bytes %}, {{ (f.size_bytes/1024)|round(0,'floor')|int }} KB{% endif %})</span>
+              </a>
+            {% endif %}
+          {% endfor %}
+
+          {% if not ns.has_any %}
             <div class="text-muted small">No files available yet.</div>
           {% endif %}
         </div>
@@ -410,7 +448,9 @@
       <div class="card-body" style="padding:0">
         {% for key, meta in log_files.items() %}
         <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid #f3f4f6;font-size:12px">
-          <div style="font-weight:600;color:#374151">{{ meta.filename }}</div>
+          <a href="/request/{{ req.id }}/dl/log/{{ key }}"
+             style="font-weight:600;color:#1a73e8;text-decoration:none;word-break:break-all"
+             title="Download {{ meta.filename }}">&#128229; {{ meta.filename }}</a>
           <div style="flex-shrink:0;margin-left:10px;text-align:right;color:#6b7280">
             {% if meta.size_bytes %}
               {% if meta.size_bytes > 1048576 %}{{ "%.1f"|format(meta.size_bytes/1048576) }} MB

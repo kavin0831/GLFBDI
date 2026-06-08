@@ -142,25 +142,46 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
     """
     Parse Oracle's Import Payables Invoices BIP data XML to detect actual outcome.
 
-    Looks at:
-      - <C_INVOICES_FETCHED> / <G_INVOICES_FETCHED>
-      - <C_INVOICES_CREATED> / <G_INVOICES_CREATED>
-      - <C_INVOICES_REJECTED>
-      - <LIST_G_BUSINESS_UNIT_REJECTION>/G_BUSINESS_UNIT_REJECTION/LIST_G_REJECTIONS/G_REJECTIONS
+    Oracle BIP XML structure (root tag <APXIIMPT>):
+      <C_INVOICES_FETCHED>  <C_INVOICES_CREATED>  <C_INVOICES_REJECTED>  — summary counts
+      <LIST_G_BUSINESS_UNIT_REJECTION>
+        <G_BUSINESS_UNIT_REJECTION>
+          <BUSINESS_UNIT_REJECTION>  — BU name
+          <CS_REJ_REC_COUNT>         — count of rejections for this BU
+          <LIST_G_REJECTIONS>
+            <G_REJECTIONS>           — one per rejected invoice
+              INVOICE_NUM_R, INVOICE_ID_R, VENDOR_ID, SUPPLIER_NUMBER_R,
+              SUPPLIER_NAME_R, VENDOR_SITE_CODE, INVOICE_CURRENCY_CODE_R,
+              INVOICE_DATE_R, INVOICE_AMOUNT_R, INVOICE_AMOUNT_REJ
+              <LIST_G_REJECTIONS_DETAIL>
+                <G_REJECTIONS_DETAIL>  — one per rejection reason on that invoice
+                  REJECT_REASON, REJECTION_DESCRIPTION, C_LINE_LEVEL
+
+    Note: G_INVOICES_FETCHED / G_INVOICES_CREATED appear in the XML but are
+    always empty; use C_INVOICES_FETCHED / C_INVOICES_CREATED instead.
 
     Returns: {
       'fetched': int, 'created': int, 'rejected': int,
+      'business_units': [str, ...],   # BU names that had rejections
       'rejections': [
-        {'invoice_num': str, 'invoice_id': str, 'supplier': str, 'site': str,
-         'amount': str, 'reasons': [str, ...], 'descriptions': [str, ...]},
+        {
+          'business_unit': str,
+          'invoice_num': str, 'invoice_id': str,
+          'supplier': str, 'supplier_num': str, 'site': str,
+          'amount': str, 'currency': str, 'date': str,
+          'reasons': [str, ...],         # REJECT_REASON — short code
+          'descriptions': [str, ...],    # REJECTION_DESCRIPTION — full Oracle message
+          'line_levels': [str, ...],     # C_LINE_LEVEL — 'H' header / 'L' line
+        },
         ...
       ],
       'has_rejections': bool,
-      'summary': str,    # one-line for stop_reason
+      'summary': str,    # one-line for email / stop_reason
     }
     """
     from xml.etree import ElementTree as ET
     out = {"fetched": 0, "created": 0, "rejected": 0,
+           "business_units": [],
            "rejections": [], "has_rejections": False, "summary": ""}
     if not xml_bytes:
         return out
@@ -174,32 +195,72 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
         try: return int((el.text or "").strip()) if el is not None and el.text else default
         except (ValueError, TypeError): return default
 
-    out["fetched"]  = _i("G_INVOICES_FETCHED")  or _i("C_INVOICES_FETCHED")
-    out["created"]  = _i("G_INVOICES_CREATED")  or _i("C_INVOICES_CREATED")
+    # C_* fields are always populated; G_* variants appear but are empty in real Oracle output
+    out["fetched"]  = _i("C_INVOICES_FETCHED") or _i("G_INVOICES_FETCHED")
+    out["created"]  = _i("C_INVOICES_CREATED") or _i("G_INVOICES_CREATED")
     out["rejected"] = _i("C_INVOICES_REJECTED")
 
-    # Walk every G_REJECTIONS block — handles multi-BU and multi-invoice
-    for rej in root.findall(".//G_REJECTIONS"):
-        invoice = {
-            "invoice_num":  (rej.findtext("INVOICE_NUM_R") or "").strip(),
-            "invoice_id":   (rej.findtext("INVOICE_ID_R") or "").strip(),
-            "supplier":     (rej.findtext("SUPPLIER_NAME_R") or "").strip(),
-            "supplier_num": (rej.findtext("SUPPLIER_NUMBER_R") or "").strip(),
-            "site":         (rej.findtext("VENDOR_SITE_CODE") or "").strip(),
-            "currency":     (rej.findtext("INVOICE_CURRENCY_CODE_R") or "").strip(),
-            "date":         (rej.findtext("INVOICE_DATE_R") or "").strip(),
-            "amount":       (rej.findtext("INVOICE_AMOUNT_R") or rej.findtext("INVOICE_AMOUNT_REJ") or "").strip(),
-            "reasons":      [], "descriptions": [],
-        }
-        for d in rej.findall("./LIST_G_REJECTIONS_DETAIL/G_REJECTIONS_DETAIL"):
-            r = (d.findtext("REJECT_REASON") or "").strip()
-            desc = (d.findtext("REJECTION_DESCRIPTION") or "").strip()
-            if r:    invoice["reasons"].append(r)
-            if desc: invoice["descriptions"].append(desc)
-        out["rejections"].append(invoice)
+    # Walk Business Unit rejection blocks to capture BU name per rejection
+    bu_names: list[str] = []
+    for bu_el in root.findall(".//G_BUSINESS_UNIT_REJECTION"):
+        bu_name = (bu_el.findtext("BUSINESS_UNIT_REJECTION") or "").strip()
+        if bu_name and bu_name not in bu_names:
+            bu_names.append(bu_name)
+        for rej in bu_el.findall(".//G_REJECTIONS"):
+            invoice = {
+                "business_unit": bu_name,
+                "invoice_num":   (rej.findtext("INVOICE_NUM_R")          or "").strip(),
+                "invoice_id":    (rej.findtext("INVOICE_ID_R")           or "").strip(),
+                "vendor_id":     (rej.findtext("VENDOR_ID")              or "").strip(),
+                "supplier":      (rej.findtext("SUPPLIER_NAME_R")        or "").strip(),
+                "supplier_num":  (rej.findtext("SUPPLIER_NUMBER_R")      or "").strip(),
+                "site":          (rej.findtext("VENDOR_SITE_CODE")       or "").strip(),
+                "currency":      (rej.findtext("INVOICE_CURRENCY_CODE_R")or "").strip(),
+                "date":          (rej.findtext("INVOICE_DATE_R")         or "").strip(),
+                "amount":        (rej.findtext("INVOICE_AMOUNT_R")
+                                  or rej.findtext("INVOICE_AMOUNT_REJ")  or "").strip(),
+                "reasons":       [],
+                "descriptions":  [],
+                "line_levels":   [],
+            }
+            for d in rej.findall("./LIST_G_REJECTIONS_DETAIL/G_REJECTIONS_DETAIL"):
+                r    = (d.findtext("REJECT_REASON")        or "").strip()
+                desc = (d.findtext("REJECTION_DESCRIPTION")or "").strip()
+                lvl  = (d.findtext("C_LINE_LEVEL")         or "").strip()
+                if r:    invoice["reasons"].append(r)
+                if desc: invoice["descriptions"].append(desc)
+                if lvl:  invoice["line_levels"].append(lvl)
+            out["rejections"].append(invoice)
 
-    # Heuristic: also consider "fetched > created" as a problem even if
-    # C_INVOICES_REJECTED isn't populated (some Oracle versions omit it)
+    # Fallback: if no BU structure found (older Oracle layout), scan globally
+    if not out["rejections"]:
+        for rej in root.findall(".//G_REJECTIONS"):
+            invoice = {
+                "business_unit": "",
+                "invoice_num":   (rej.findtext("INVOICE_NUM_R")          or "").strip(),
+                "invoice_id":    (rej.findtext("INVOICE_ID_R")           or "").strip(),
+                "vendor_id":     (rej.findtext("VENDOR_ID")              or "").strip(),
+                "supplier":      (rej.findtext("SUPPLIER_NAME_R")        or "").strip(),
+                "supplier_num":  (rej.findtext("SUPPLIER_NUMBER_R")      or "").strip(),
+                "site":          (rej.findtext("VENDOR_SITE_CODE")       or "").strip(),
+                "currency":      (rej.findtext("INVOICE_CURRENCY_CODE_R")or "").strip(),
+                "date":          (rej.findtext("INVOICE_DATE_R")         or "").strip(),
+                "amount":        (rej.findtext("INVOICE_AMOUNT_R")
+                                  or rej.findtext("INVOICE_AMOUNT_REJ")  or "").strip(),
+                "reasons": [], "descriptions": [], "line_levels": [],
+            }
+            for d in rej.findall("./LIST_G_REJECTIONS_DETAIL/G_REJECTIONS_DETAIL"):
+                r    = (d.findtext("REJECT_REASON")        or "").strip()
+                desc = (d.findtext("REJECTION_DESCRIPTION")or "").strip()
+                lvl  = (d.findtext("C_LINE_LEVEL")         or "").strip()
+                if r:    invoice["reasons"].append(r)
+                if desc: invoice["descriptions"].append(desc)
+                if lvl:  invoice["line_levels"].append(lvl)
+            out["rejections"].append(invoice)
+
+    out["business_units"] = bu_names
+
+    # Heuristic: treat partial imports as rejections even when C_INVOICES_REJECTED=0
     out["has_rejections"] = (
         out["rejected"] > 0
         or len(out["rejections"]) > 0
@@ -208,11 +269,10 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
     )
 
     if out["has_rejections"]:
-        # Build a concise summary listing the unique reasons
         all_reasons = []
         for inv in out["rejections"]:
             all_reasons.extend(inv["reasons"])
-        unique = list(dict.fromkeys(all_reasons))   # preserve order, de-dup
+        unique = list(dict.fromkeys(all_reasons))
         reasons_str = "; ".join(unique[:5]) or "see report"
         out["summary"] = (
             f"Import Payables Invoices: {out['rejected'] or len(out['rejections'])} "
@@ -229,8 +289,7 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
 
 # ── BI Publisher: render the real Oracle PDF for an ESS BIP job ───────────────
 
-# Confirmed working live with credentials Kavin.Sasikumar on
-# fa-etao-dev18-saasfademo1: report renders to a 10.9 KB PDF.
+# Confirmed working live on fa-etao-dev18-saasfademo1: report renders to a 10.9 KB PDF.
 BIP_REPORT_PATHS = {
     # ESS_JOB_NAME → BIP report absolute path
     "APXIIMPT": "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo",
@@ -443,7 +502,8 @@ def submit_ap_fbdi(
 
     src       = (source    or cfg.ap_source    or "External").strip()
     pay_grp   = (pay_group or cfg.ap_pay_group or "1000").strip()
-    inv_grp   = (invoice_group or cfg.ap_invoice_group or f"AP_BATCH_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}").strip() if False else (invoice_group or "").strip()
+    inv_grp = (invoice_group or (cfg.ap_invoice_group or "").strip()
+               or f"AP_BATCH_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}").strip()
     if not inv_grp:
         inv_grp = "AP_BATCH"
     acct_date = (accounting_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")).strip()

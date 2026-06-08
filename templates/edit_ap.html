@@ -47,6 +47,45 @@
   .edit-status { margin-top:10px; min-height:1.4em; font-size:13px; }
 </style>
 
+{% if req.ap_rejections_json %}
+<div class="card mb-3" style="border-color:#f5c6cb">
+  <div class="card-header" style="background:#fff5f5">
+    <h2 class="card-title" style="color:#c0392b">&#9888; Rejected Invoices from Last Run — Fix Below</h2>
+    <span class="badge badge-failed">{{ req.ap_rejections_json | length }}</span>
+  </div>
+  <div class="card-body" style="padding:0">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead>
+        <tr style="background:#fef2f2">
+          <th style="padding:6px 10px;border-bottom:1px solid #fca5a5;text-align:left">Invoice #</th>
+          <th style="padding:6px 10px;border-bottom:1px solid #fca5a5;text-align:left">Supplier / Site</th>
+          <th style="padding:6px 10px;border-bottom:1px solid #fca5a5;text-align:left">Rejection Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for inv in req.ap_rejections_json %}
+        <tr>
+          <td style="padding:6px 10px;border-bottom:1px solid #f3f4f6;font-family:monospace;font-weight:600">{{ inv.invoice_num }}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #f3f4f6">{{ inv.supplier }}<br><span style="color:#9ca3af;font-size:11px">{{ inv.site }}</span></td>
+          <td style="padding:6px 10px;border-bottom:1px solid #f3f4f6;color:#c0392b">
+            {% for r in inv.reasons %}<div>{{ r }}</div>{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% elif req.stop_reason %}
+<div class="alert" style="background:#fff5f5;border:1px solid #fca5a5;border-radius:6px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:#7f1d1d">
+  <strong>&#9888; Last run error:</strong> <span style="white-space:pre-wrap">{{ req.stop_reason[:600] }}</span>
+</div>
+{% elif req.error_message %}
+<div class="alert" style="background:#fff5f5;border:1px solid #fca5a5;border-radius:6px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:#7f1d1d">
+  <strong>&#9888; Last run error:</strong> {{ req.error_message[:400] }}
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-header">
     <h2 class="card-title">&#128179; Edit AP Invoice FBDI — Wizard</h2>

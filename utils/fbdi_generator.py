@@ -149,10 +149,15 @@ def build_rows(records: list[dict], mappings: list[dict], meta: dict) -> tuple[l
     # salted per-process — we'd get different values after each server restart,
     # so submit_fbdi's group_id would not match the CSV's group_id, and the
     # GL Journal Import job would silently find 0 matching rows).
+    # Accept an explicit override (passed by the workflow for reprocess versioning)
+    # so each reprocess version generates a distinct group_id, avoiding conflicts
+    # when Oracle hasn't fully purged the previous run's GL_INTERFACE rows.
     import hashlib as _h
     _rid = meta.get("request_id", "") or ""
-    group_id = (str(int(_h.sha1(_rid.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
-                  if _rid else "1")
+    _group_seed = meta.get("gl_group_seed") or _rid
+    group_id = (meta.get("gl_group_id")
+                or (str(int(_h.sha1(_group_seed.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
+                    if _group_seed else "1"))
     now       = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
     # Fields that must be reformatted to YYYY/MM/DD if the source has them

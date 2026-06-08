@@ -14,13 +14,14 @@ from pathlib import Path
 
 import httpx
 
-FUSION_URL  = "https://fa-etao-dev18-saasfademo1.ds-fa.oraclepdemos.com"
-USERNAME    = "Kavin.Sasikumar"
-PASSWORD    = "12345678"
+import os as _os
+FUSION_URL  = _os.environ.get("FUSION_URL", "")
+USERNAME    = _os.environ.get("FUSION_USER", "")
+PASSWORD    = _os.environ.get("FUSION_PASSWORD", "")
 
-# Values from the user's APIMPORT.properties — exact replay
-AP_BU_ID    = "300000046987012"   # US1 Business Unit ID
-AP_LEDGER_ID= "300000046975971"   # US Primary Ledger ID
+# Set these via environment variables before running this test
+AP_BU_ID    = _os.environ.get("AP_BU_ID", "")
+AP_LEDGER_ID = _os.environ.get("AP_LEDGER_ID", "")
 AP_SOURCE   = "External"
 AP_DOC_ACCT = "fin$/payables$/import$"
 AP_JOB_NAME = "oracle/apps/ess/financials/payables/invoices/transactions,APXIIMPT"

@@ -41,13 +41,17 @@ dist/
 # AP test artifacts (local dev only — sample data lives in apinvoiceimporttest/)
 apinvoiceimporttest.zip
 apinvoiceimporttest/AP-TEST-*.zip
+apinvoiceimporttest/SCEN*.zip
+apinvoiceimporttest/ap_scenario_results_*.json
 apinvoiceimporttest/post_upload.py
 boot.err
+
+# Session / tool artifacts
+CODEBASE_MEMORY.md
 
 storage/logs/
 storage/
 apinvoiceimporttest/post_*.py
 apinvoiceimporttest/probe_*.py
-apinvoiceimporttest/post_*.py
 apinvoiceimporttest/real_oracle_report_*.pdf
 apinvoiceimporttest/oracle_real_pdf.pdf

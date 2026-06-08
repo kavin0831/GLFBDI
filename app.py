@@ -1189,6 +1189,55 @@ async def download_request_file(req_id: str, filename: str):
     return JSONResponse({"error": "file not found"}, 404)
 
 
+@app.get("/request/{req_id}/dl/kind/{kind:path}")
+async def download_by_kind(req_id: str, kind: str):
+    """Download a stored artifact by its exact MongoDB kind key (e.g. ap_hdr_csv_v0)."""
+    from fastapi.responses import Response
+    result = get_generated_file(req_id, kind)
+    if not result:
+        return JSONResponse({"error": f"kind '{kind}' not found"}, 404)
+    content, filename = result
+    if filename.lower().endswith(".zip"):
+        mt = "application/zip"
+    elif filename.lower().endswith(".csv"):
+        mt = "text/csv"
+    elif filename.lower().endswith(".pdf"):
+        mt = "application/pdf"
+    elif filename.lower().endswith(".xml"):
+        mt = "application/xml"
+    else:
+        mt = "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=mt,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/request/{req_id}/dl/log/{key:path}")
+async def download_log_file(req_id: str, key: str):
+    """Download a specific stored ESS log file by its MongoDB key."""
+    from fastapi.responses import Response
+    from database import get_log_file
+    result = get_log_file(req_id, key)
+    if not result:
+        return JSONResponse({"error": f"log key '{key}' not found"}, 404)
+    content, filename = result
+    if filename.lower().endswith(".zip"):
+        mt = "application/zip"
+    elif filename.lower().endswith(".xml"):
+        mt = "application/xml"
+    elif filename.lower().endswith(".pdf"):
+        mt = "application/pdf"
+    else:
+        mt = "text/plain"
+    return Response(
+        content=content,
+        media_type=mt,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Edit & Reprocess ──────────────────────────────────────────────────────────
 
 def _parse_request_source_to_table(req_id: str):
@@ -1517,15 +1566,16 @@ async def reprocess_request(req_id: str):
             return JSONResponse({"error": "not found"}, 404)
         parent = getattr(req, "parent_request_id", "") or req_id
         version = int(getattr(req, "version", 0) or 0)
+        txn_type = (getattr(req, "transaction_type", "GL") or "GL").upper()
         req.parent_request_id = parent
-        req.status = "PROCESSING"
+        req.status = "RECEIVED"
         req.current_stage = "QUEUED"
         req.error_message = None
         req.stop_reason = None
         db.commit()
     append_log(req_id, "INFO",
-               f"=== REPROCESS triggered (edit v{version}) ===")
-    threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
+               f"=== REPROCESS triggered (edit v{version}, txn={txn_type}) ===")
+    _dispatch_processing(req_id, txn_type)
     return RedirectResponse(f"/request/{req_id}", status_code=303)
 
 
@@ -1543,11 +1593,13 @@ async def retry_request(req_id: str):
         if not req: return JSONResponse({"error":"not found"}, 404)
         if req.status != "FAILED":
             return JSONResponse({"error":f"Cannot retry status={req.status}"}, 400)
+        txn_type = (getattr(req, "transaction_type", "GL") or "GL").upper()
         req.status = "RECEIVED"
         req.error_message = None
+        req.stop_reason = None
         req.current_stage = "QUEUED"
         db.commit()
-    threading.Thread(target=process_request, args=(req_id,), daemon=True).start()
+    _dispatch_processing(req_id, txn_type)
     return {"message": "Retry queued", "request_id": req_id}
 
 

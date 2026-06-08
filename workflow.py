@@ -1161,7 +1161,9 @@ def _direct_submit(request_id: str, file_path: str, zip_path: Path):
             # nothing was actually posted). Treat as failure.
             try:
                 analysis = analyze_ess_logs(logs)
-                if analysis.get("has_errors"):
+                # has_warnings: Oracle JI imported some rows but rejected others
+                # (partial import) — treat as failure so user isn't misled
+                if analysis.get("has_errors") or analysis.get("has_warnings"):
                     direct_inner_failed = True
                     direct_log_summary = (
                         f"{analysis['summary']}\n\n"
@@ -1436,6 +1438,22 @@ def _process_request_impl(request_id: str):
             meta["currency_conversion_rate"] = "1.00"
 
     # 5. Generate FBDI files
+    # Compute version-aware group_id BEFORE generating the CSV so the value
+    # baked into GlInterface.csv column 67 matches what we'll pass in ParameterList.
+    # Including the version in the seed prevents GL_INTERFACE row collisions when
+    # Oracle hasn't fully purged a previous failed run's rows.
+    import hashlib as _h_gen
+    try:
+        from database import _mdb as _g_mdb
+        _g_vdoc = _g_mdb()["journal_requests"].find_one({"_id": request_id}, {"version": 1})
+        _g_ver = int((_g_vdoc.get("version") or 0) if _g_vdoc else 0)
+    except Exception:
+        _g_ver = 0
+    _gl_group_seed = f"{request_id}:v{_g_ver}" if _g_ver > 0 else request_id
+    _pre_group_id = str(int(_h_gen.sha1(_gl_group_seed.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
+    meta["gl_group_seed"] = _gl_group_seed
+    meta["gl_group_id"]   = _pre_group_id
+
     csv_path, zip_path, bad_csv_path = _stage_generate(request_id, records, mappings, meta, bad_indices)
 
     good_count = len(records) - len(bad_indices)
@@ -1491,13 +1509,9 @@ def _process_request_impl(request_id: str):
         logger.warning("Period status check failed — proceeding anyway")
 
     # 8. Submit to Oracle Fusion
-    # Generate a deterministic numeric Interface Group Identifier from our
-    # internal request_id. We use SHA-1 (not Python's hash()) because hash() is
-    # salted per-process — that would mean the value changes after a server
-    # restart, and reprocess would generate a CSV with one group_id but submit
-    # a ParameterList with a different group_id → JI finds 0 matching rows.
-    import hashlib as _h
-    group_id = str(int(_h.sha1(request_id.encode("utf-8")).hexdigest()[:9], 16) % 999999999)
+    # Use the group_id that was already baked into the generated CSV (step 5).
+    # This ensures the ParameterList group_id always matches column 67 in the CSV.
+    group_id = meta.get("gl_group_id") or _pre_group_id
     _db_update(request_id, fusion_group_id=group_id)
     eid = _stage_submit(request_id, zip_path, group_id=group_id,
                         ledger_name=meta.get("ledger_name", ""))
@@ -1614,8 +1628,10 @@ def _process_request_impl(request_id: str):
                     store_log_file(request_id, new_name, body_bytes)
 
                 # If we got logs, parse for granular error codes
+                # has_warnings means Oracle JI imported some rows but rejected others
+                # (partial import) — treat as failure so user isn't misled
                 analysis = analyze_ess_logs(logs)
-                if analysis["has_errors"]:
+                if analysis["has_errors"] or analysis["has_warnings"]:
                     inner_failed = True
                     detail = "\n".join(analysis["detail_lines"][:25])
                     log_summary = f"{analysis['summary']}\n\n{detail}"

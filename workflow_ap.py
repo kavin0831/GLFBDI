@@ -296,6 +296,11 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
     out_dir = STORAGE / "fbdi" / req_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Read current version for versioned artifact keys (same pattern as GL)
+    from database import _mdb as _ap_mdb
+    _ver_doc = _ap_mdb()["journal_requests"].find_one({"_id": req_id}, {"version": 1})
+    ver = int((_ver_doc.get("version") or 0) if _ver_doc else 0)
+
     meta = {**meta, "request_id": req_id, "bad_row_indices": bad_indices}
     hdrs, lines, bad = build_ap_rows(records, mappings, meta)
 
@@ -310,23 +315,23 @@ def _stage_generate(req_id: str, records: list[dict], mappings: list[dict],
 
     zip_path = package_ap_zip(hdr_csv, ln_csv, out_dir)
 
-    # Persist all to MongoDB
-    store_generated_file(req_id, "ap_hdr_csv_v0", "ApInvoicesInterface.csv", hdr_csv.read_bytes())
-    store_generated_file(req_id, "ap_line_csv_v0","ApInvoiceLinesInterface.csv", ln_csv.read_bytes())
-    store_generated_file(req_id, "fbdi_zip_v0",   "ApInvoicesImport.zip", zip_path.read_bytes())
+    # Persist all to MongoDB with version tags (same pattern as GL)
+    store_generated_file(req_id, f"ap_hdr_csv_v{ver}", "ApInvoicesInterface.csv", hdr_csv.read_bytes())
+    store_generated_file(req_id, f"ap_line_csv_v{ver}", "ApInvoiceLinesInterface.csv", ln_csv.read_bytes())
+    store_generated_file(req_id, f"fbdi_zip_v{ver}",    "ApInvoicesImport.zip", zip_path.read_bytes())
     if bad_csv:
-        store_generated_file(req_id, "bad_csv_v0","ap_bad_data.csv", bad_csv.read_bytes())
+        store_generated_file(req_id, f"bad_csv_v{ver}", "ap_bad_data.csv", bad_csv.read_bytes())
 
     _db_update(req_id,
-               fbdi_csv_path=str(hdr_csv),
-               fbdi_zip_path=str(zip_path),
-               bad_data_csv_path=str(bad_csv) if bad_csv else None,
+               fbdi_csv_path=hdr_csv.name,
+               fbdi_zip_path=zip_path.name,
+               bad_data_csv_path=bad_csv.name if bad_csv else None,
                total_rows=len(records),
                good_rows=len(hdrs) + len(lines),
                bad_rows=len(bad),
                ap_header_count=len(hdrs),
                ap_line_count=len(lines))
-    _log(req_id, "INFO", f"Generated FBDI: {len(hdrs)} header(s), {len(lines)} line(s), "
+    _log(req_id, "INFO", f"Generated FBDI v{ver}: {len(hdrs)} header(s), {len(lines)} line(s), "
                           f"{len(bad)} bad row(s)")
     return zip_path
 
@@ -471,6 +476,20 @@ def process_ap_request(request_id: str) -> None:
         "accounting_date":       req_doc.get("accounting_date")       or "",
         "legal_entity":          req_doc.get("legal_entity")          or "",
     }
+
+    # Add version suffix to import set so each reprocess creates a unique
+    # invoice group in Oracle — prevents collisions from incomplete purges
+    try:
+        import re as _re_ap
+        _ver_for_grp = int((req_doc.get("version") or 0))
+        if _ver_for_grp > 0:
+            _base_grp = (meta["ap_invoice_group"] or f"BATCH_{request_id[:8]}").rstrip()
+            # Remove any stale _vN suffix before stamping with current version
+            _base_grp = _re_ap.sub(r"_v\d+$", "", _base_grp)
+            meta["ap_invoice_group"] = f"{_base_grp}_v{_ver_for_grp}"
+    except Exception:
+        pass
+
     _db_update(request_id,
                ap_business_unit_name=meta["ap_business_unit_name"],
                ap_invoice_group=meta["ap_invoice_group"])
@@ -570,12 +589,25 @@ def process_ap_request(request_id: str) -> None:
 def _process_prebuilt_ap_zip(request_id: str, file_path: str,
                               pairs: list[tuple[bytes, bytes]]) -> None:
     """If user uploaded a pre-built AP FBDI ZIP, submit each invoice batch."""
+    from database import _mdb as _pb_mdb
+    import re as _re_pb
     cfg = get_settings()
+
+    # Read current version for versioned artifact keys and unique import set
+    _pb_vdoc = _pb_mdb()["journal_requests"].find_one({"_id": request_id}, {"version": 1})
+    _pb_ver = int((_pb_vdoc.get("version") or 0) if _pb_vdoc else 0)
+
+    # Build version-unique invoice group
+    _pb_base_grp = (cfg.ap_invoice_group or f"BATCH_{request_id[:8]}").rstrip()
+    _pb_base_grp = _re_pb.sub(r"_v\d+$", "", _pb_base_grp)
+    _pb_invoice_group = (f"{_pb_base_grp}_v{_pb_ver}" if _pb_ver > 0 else _pb_base_grp)
+
     _db_update(request_id, status="PROCESSING", current_stage="SUBMITTING",
                ap_business_unit_name=cfg.ap_business_unit_name,
-               ap_invoice_group=cfg.ap_invoice_group,
+               ap_invoice_group=_pb_invoice_group,
                ap_source=cfg.ap_source)
-    _log(request_id, "INFO", f"Pre-built AP FBDI: {len(pairs)} batch(es) to submit")
+    _log(request_id, "INFO",
+         f"Pre-built AP FBDI: {len(pairs)} batch(es), import group={_pb_invoice_group}")
 
     # If multiple pairs, submit them sequentially with the same overall request.
     eids: list[str] = []
@@ -586,19 +618,19 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
         ln_csv  = out_dir / "ApInvoiceLinesInterface.csv"
         hdr_csv.write_bytes(hdr_b); ln_csv.write_bytes(line_b)
         zp = package_ap_zip(hdr_csv, ln_csv, out_dir)
-        # First batch lives under the canonical fbdi_zip_v0 key so downloads work
-        store_key = "fbdi_zip_v0" if i == 0 else f"fbdi_zip_v{i}"
-        store_generated_file(request_id, store_key,
+        # Use version-based keys; pair-suffix for multi-batch to keep keys unique
+        pair_sfx = f"_p{i}" if i > 0 else ""
+        store_generated_file(request_id, f"fbdi_zip_v{_pb_ver}{pair_sfx}",
                               "ApInvoicesImport.zip", zp.read_bytes())
-        # Also persist the split CSVs for audit
-        store_generated_file(request_id, "ap_hdr_csv_v0"  if i == 0 else f"ap_hdr_csv_v{i}",
+        store_generated_file(request_id, f"ap_hdr_csv_v{_pb_ver}{pair_sfx}",
                               "ApInvoicesInterface.csv", hdr_b)
-        store_generated_file(request_id, "ap_line_csv_v0" if i == 0 else f"ap_line_csv_v{i}",
+        store_generated_file(request_id, f"ap_line_csv_v{_pb_ver}{pair_sfx}",
                               "ApInvoiceLinesInterface.csv", line_b)
+        pair_grp = f"{_pb_invoice_group}_p{i}" if i > 0 else _pb_invoice_group
         try:
             resp = submit_ap_fbdi(
                 cfg, str(zp),
-                invoice_group=(cfg.ap_invoice_group or f"BATCH_{request_id[:8]}_p{i}"),
+                invoice_group=pair_grp,
                 accounting_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 business_unit_name=cfg.ap_business_unit_name,
             )
@@ -622,7 +654,7 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     # Use the FIRST batch as the primary fusion_request_id; record extras
     _db_update(request_id, fusion_request_id=eids[0],
                ap_extra_request_ids=eids[1:],
-               fbdi_zip_path=str(STORAGE / "fbdi" / f"{request_id}-pair-0" / "ApInvoicesImport.zip"))
+               fbdi_zip_path="ApInvoicesImport.zip")
 
     final = _stage_monitor(request_id, eids[0])
 
@@ -748,14 +780,37 @@ def _download_all_ap_logs(request_id: str, parent_eid: str,
             zf.writestr(name, data)
     zip_bytes = out_buf.getvalue()
 
+    # Read current version so each reprocess stores under a unique key
+    from database import _mdb as _log_mdb, store_log_file as _store_log_file
+    import re as _re_log
+    _log_vdoc = _log_mdb()["journal_requests"].find_one({"_id": request_id}, {"version": 1})
+    v_num = int((_log_vdoc.get("version") or 0) if _log_vdoc else 0)
+    v_tag = f"v{v_num}"
+
     log_dir = STORAGE / "logs" / request_id
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_zip = log_dir / f"ess_logs_{parent_eid}.zip"
+    log_zip = log_dir / f"ess_logs_{parent_eid}_{v_tag}.zip"
     log_zip.write_bytes(zip_bytes)
-    store_generated_file(request_id, "ess_log_v0", log_zip.name, zip_bytes)
-    _db_update(request_id, ess_log_path=str(log_zip))
+    store_generated_file(request_id, f"ess_log_{v_tag}", log_zip.name, zip_bytes)
+    _db_update(request_id, ess_log_path=log_zip.name)
+
+    # Store individual log files for display in the Log Files card (like GL does)
+    short_id = request_id[:8]
+    for name, data in combined.items():
+        try:
+            parts = name.split("/", 1)
+            eid_part = parts[0]
+            file_part = parts[1] if len(parts) > 1 else name
+            leaf = file_part.rsplit("/", 1)[-1]
+            if leaf.endswith((".log", ".out", ".xml", ".txt")):
+                safe_leaf = _re_log.sub(r"[^A-Za-z0-9._-]", "_", leaf)
+                new_name = f"{short_id}_{v_tag}_ap_{eid_part}_{safe_leaf}"
+                _store_log_file(request_id, new_name, data)
+        except Exception:
+            pass
+
     _log(request_id, "INFO",
-         f"Combined {len(zip_bytes)} bytes of logs across {len(ids)} job(s)")
+         f"Combined {len(zip_bytes)} bytes of logs ({v_tag}) across {len(ids)} job(s)")
 
 
 def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
@@ -841,17 +896,32 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
             logger.warning("BIP XML extraction failed (report job %s): %s", report_job_id, e)
 
     # Fallback: scan the combined log ZIP stored in MongoDB for any APXIIMPT XML
+    # Find the highest-versioned ess_log_vN key so reprocesses use the right log
     if not bip_analysis:
         try:
-            stored = get_generated_file(request_id, "ess_log_v0")
-            if stored:
-                fallback_zb, _ = stored
-                xml_data = _extract_bip_xml_from_zip(fallback_zb)
-                if xml_data:
-                    store_generated_file(request_id, "ap_report_xml",
-                                          f"ap_report_data_fallback.xml", xml_data)
-                    bip_analysis = analyze_ap_bip_xml(xml_data)
-                    _log(request_id, "INFO", "BIP XML found via fallback scan of combined log ZIP")
+            import re as _re_bip
+            from database import _mdb as _bip_mdb, get_generated_file as _get_gf
+            _bip_doc = _bip_mdb()["generated_files"].find_one({"_id": request_id},
+                                                               {"files": 1})
+            _bip_files = (_bip_doc or {}).get("files", {})
+            _best_log_n, _best_log_key = -1, ""
+            for _k in _bip_files:
+                _m = _re_bip.match(r"^ess_log_v(\d+)$", _k)
+                if _m:
+                    _n = int(_m.group(1))
+                    if _n > _best_log_n:
+                        _best_log_n, _best_log_key = _n, _k
+            if _best_log_key:
+                _log_result = _get_gf(request_id, _best_log_key)
+                if _log_result:
+                    fallback_zb, _ = _log_result
+                    xml_data = _extract_bip_xml_from_zip(fallback_zb)
+                    if xml_data:
+                        store_generated_file(request_id, "ap_report_xml",
+                                              "ap_report_data_fallback.xml", xml_data)
+                        bip_analysis = analyze_ap_bip_xml(xml_data)
+                        _log(request_id, "INFO",
+                             f"BIP XML found via fallback scan of {_best_log_key}")
         except Exception as e:
             logger.warning("BIP XML fallback scan failed: %s", e)
 
