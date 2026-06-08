@@ -218,7 +218,6 @@ table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    table-layout: fixed;
 }
 
 thead th {
@@ -232,7 +231,6 @@ thead th {
     letter-spacing: .5px;
     border-bottom: 1px solid #e8ecf0;
     white-space: nowrap;
-    overflow: hidden;
 }
 
 tbody tr {
@@ -247,11 +245,18 @@ td {
     padding: 10px 12px;
     color: #374151;
     vertical-align: middle;
+}
+
+/* ── Requests table — fixed layout with defined column widths ── */
+.requests-table {
+    table-layout: fixed;
+}
+.requests-table td {
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* Column widths for the requests table */
+/* Column widths for the requests table (8-col with Type) */
 .col-file    { width: 22%; }
 .col-type    { width: 5%; }
 .col-source  { width: 15%; }
@@ -261,7 +266,7 @@ td {
 .col-date    { width: 11%; }
 .col-actions { width: 14%; }
 
-/* For dashboard (no type column) */
+/* For dashboard (no type column, 7-col) */
 .col-file-d    { width: 24%; }
 .col-source-d  { width: 17%; }
 .col-status-d  { width: 14%; }
@@ -282,6 +287,12 @@ td {
     max-width: 100%;
 }
 .file-link:hover { text-decoration: underline; }
+
+/* Edit tables must NOT use fixed layout — they have 100+ dynamic columns */
+.edit-tablewrap table {
+    table-layout: auto !important;
+    width: auto !important;
+}
 
 /* ── Badges ──────────────────────────────────────────── */
 .badge {
