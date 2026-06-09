@@ -577,14 +577,31 @@ def process_ap_request(request_id: str) -> None:
             _log(request_id, "WARN",
                  "No BIP XML — AP child job ERROR/WARNING; flagging as rejections")
         else:
-            # AP jobs found, ESS succeeded, no child errors, but BIP XML missing.
-            # Only now is "0 invoices imported" a reasonable inference.
-            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
-                   "no_data": True, "has_rejections": False,
-                   "summary": "BIP report XML not found — 0 invoices confirmed. "
-                               "Likely Import Set mismatch or empty FBDI file."}
-            _log(request_id, "WARN",
-                 "No BIP XML and no child errors — treating as 0 invoices imported")
+            # AP jobs found, no child errors, no BIP XML.
+            # If the Import Payables Invoices job itself SUCCEEDED, trust it — do NOT
+            # infer no_data=True; that would be a false Import Set mismatch message.
+            _import_ok = any(
+                "Import Payables Invoices" in (j.get("name") or "")
+                and j.get("status") == "SUCCEEDED"
+                for j in ap_jobs
+            )
+            if _import_ok:
+                bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                       "no_data": False, "has_rejections": False,
+                       "summary": ("Import Payables Invoices completed successfully. "
+                                   "BIP report XML unavailable — review the downloaded "
+                                   "Oracle PDF for exact invoice counts.")}
+                _log(request_id, "INFO",
+                     "Import Payables Invoices SUCCEEDED — marking complete "
+                     "(BIP XML unavailable; PDF has the details)")
+            else:
+                # Import job not yet SUCCEEDED — infer no_data as a fallback
+                bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                       "no_data": True, "has_rejections": False,
+                       "summary": "BIP report XML not found — 0 invoices confirmed. "
+                                   "Likely Import Set mismatch or empty FBDI file."}
+                _log(request_id, "WARN",
+                     "No BIP XML and no child errors — treating as 0 invoices imported")
 
     # Persist the headline counts for the UI
     if bip.get("fetched") is not None:
@@ -763,18 +780,24 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     # scan_range=60 covers large Oracle ID gaps; 18 retries × 5s = 90s max.
     # find_ap_import_jobs now also directly walks the parent job hierarchy (Pass 1)
     # which is independent of ID gaps — so most runs succeed on attempt 0.
+    # Wait for BOTH Import job AND Report job to appear (Report has the BIP XML).
     _db_update(request_id, current_stage="FINDING_AP_JOBS")
     _log(request_id, "INFO", "Searching for downstream AP Import jobs…")
     all_ap_jobs: list[dict] = []
+    _has_report_job = False
     for attempt in range(18):
         all_ap_jobs = []
         for eid in eids:
             all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=60))
-        if all_ap_jobs:
+        _has_report_job = any("Report" in (j.get("name") or "") for j in all_ap_jobs)
+        if all_ap_jobs and _has_report_job:
             _log(request_id, "INFO",
-                 f"Found {len(all_ap_jobs)} AP job(s) after {attempt*5}s")
+                 f"Found {len(all_ap_jobs)} AP job(s) incl. Report after {attempt*5}s")
             break
-        if attempt == 0:
+        if all_ap_jobs and not _has_report_job:
+            _log(request_id, "INFO",
+                 f"Found {len(all_ap_jobs)} AP job(s) — waiting for Report job…")
+        elif attempt == 0:
             _log(request_id, "INFO",
                  "AP downstream jobs not yet visible — retrying (up to 90s)…")
         time.sleep(5)
@@ -816,12 +839,29 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
             _log(request_id, "WARN",
                  "Pre-built: no BIP XML — AP child job ERROR/WARNING; flagging as rejections")
         else:
-            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
-                   "no_data": True, "has_rejections": False,
-                   "summary": "BIP report XML not found — 0 invoices confirmed. "
-                               "Likely Import Set mismatch or empty FBDI file."}
-            _log(request_id, "WARN",
-                 "Pre-built: no BIP XML and no child errors — treating as 0 invoices imported")
+            # If the Import Payables Invoices job itself SUCCEEDED, do NOT infer
+            # no_data=True — that wrongly blames an Import Set mismatch.
+            _import_ok = any(
+                "Import Payables Invoices" in (j.get("name") or "")
+                and j.get("status") == "SUCCEEDED"
+                for j in all_ap_jobs
+            )
+            if _import_ok:
+                bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                       "no_data": False, "has_rejections": False,
+                       "summary": ("Import Payables Invoices completed successfully. "
+                                   "BIP report XML unavailable — review the downloaded "
+                                   "Oracle PDF for exact invoice counts.")}
+                _log(request_id, "INFO",
+                     "Pre-built: Import Payables Invoices SUCCEEDED — marking complete "
+                     "(BIP XML unavailable; PDF has the details)")
+            else:
+                bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                       "no_data": True, "has_rejections": False,
+                       "summary": "BIP report XML not found — 0 invoices confirmed. "
+                                   "Likely Import Set mismatch or empty FBDI file."}
+                _log(request_id, "WARN",
+                     "Pre-built: no BIP XML and no child errors — treating as 0 invoices imported")
 
     if bip.get("fetched") is not None:
         _db_update(request_id,
@@ -1119,16 +1159,39 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
             pass
         return b""
 
-    # Try Report job first (skip if format=data already gave us the analysis)
+    # Try Report job first (skip if format=data already gave us the analysis).
+    # The Report job generates the BIP output file — wait for it to COMPLETE
+    # before downloading logs, because its output is only written on completion.
     if report_job_id and not bip_analysis:
         try:
+            # Poll until the Report job finishes (up to 90s)
+            for _rpt_poll in range(18):
+                _rpt_status = get_ess_status(get_settings(), report_job_id)
+                if _rpt_status in ("SUCCEEDED", "ERROR", "WARNING", "FAILED"):
+                    _log(request_id, "INFO",
+                         f"Report job {report_job_id} completed: {_rpt_status}")
+                    break
+                if _rpt_poll == 0:
+                    _log(request_id, "INFO",
+                         f"Report job {report_job_id} still {_rpt_status} — waiting…")
+                time.sleep(5)
+            # Now download its output (BIP XML should be present)
             rpt_logs = download_ess_logs(get_settings(), report_job_id)
             rpt_zb   = rpt_logs.get("zip_bytes")
+            if rpt_zb:
+                _log(request_id, "INFO",
+                     f"Report job {report_job_id} logs: {len(rpt_zb)}b")
             xml_data = _extract_bip_xml_from_zip(rpt_zb) if rpt_zb else b""
             if xml_data:
                 store_generated_file(request_id, "ap_report_xml",
                                       f"ap_report_data_{report_job_id}.xml", xml_data)
                 bip_analysis = analyze_ap_bip_xml(xml_data)
+                if bip_analysis:
+                    _log(request_id, "INFO",
+                         f"BIP XML from Report job {report_job_id}: "
+                         f"fetched={bip_analysis.get('fetched')}, "
+                         f"created={bip_analysis.get('created')}, "
+                         f"rejected={bip_analysis.get('rejected')}")
         except Exception as e:
             logger.warning("BIP XML extraction failed (report job %s): %s", report_job_id, e)
 
