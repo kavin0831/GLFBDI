@@ -520,7 +520,7 @@ def process_ap_request(request_id: str) -> None:
     ap_jobs: list[dict] = []
     has_report_job = False
     for attempt in range(18):      # 18 × 5s = 90s max
-        ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=40)
+        ap_jobs = find_ap_import_jobs(get_settings(), eid, scan_range=60)
         has_report_job = any("Report" in (j.get("name") or "") for j in ap_jobs)
         if ap_jobs and has_report_job:
             _log(request_id, "INFO",
@@ -549,12 +549,26 @@ def process_ap_request(request_id: str) -> None:
         _log(request_id, "WARN", f"Report extraction failed: {e}")
 
     # If BIP data XML couldn't be parsed, infer status from available signals.
-    # Never blindly synthesise no_data=True here — a rendered PDF means Oracle
-    # DID process something (even if all were rejected).
+    # Synthesise bip only when _save_ap_report_pdf returned nothing.
+    # Use distinct messages so we don't confuse "Oracle confirmed 0" vs
+    # "we simply couldn't reach Oracle's report output".
     if not bip:
         _child_err = any(j["status"] in ("ERROR", "WARNING", "FAILED")
                          for j in ap_jobs)
-        if _child_err:
+        if not ap_jobs:
+            # No downstream AP jobs found at all — cannot determine outcome.
+            # Do NOT set no_data=True here; that would be a lie.
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": False, "has_rejections": False, "ap_jobs_missing": True,
+                   "summary": (
+                       "Import Payables Invoices child job was not found within the "
+                       "scan range. The FBDI file was uploaded successfully (ESS "
+                       "SUCCEEDED). Check Oracle Scheduled Processes for the actual "
+                       "import outcome — look for 'Import Payables Invoices' jobs "
+                       "near this submission.")}
+            _log(request_id, "WARN",
+                 "AP child jobs not found — cannot determine import outcome")
+        elif _child_err:
             # Child job reported problems — flag as rejections for user to review
             bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
                    "no_data": False, "has_rejections": True,
@@ -563,7 +577,8 @@ def process_ap_request(request_id: str) -> None:
             _log(request_id, "WARN",
                  "No BIP XML — AP child job ERROR/WARNING; flagging as rejections")
         else:
-            # ESS succeeded, no child errors, no BIP XML — treat as no_data
+            # AP jobs found, ESS succeeded, no child errors, but BIP XML missing.
+            # Only now is "0 invoices imported" a reasonable inference.
             bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
                    "no_data": True, "has_rejections": False,
                    "summary": "BIP report XML not found — 0 invoices confirmed. "
@@ -596,6 +611,22 @@ def process_ap_request(request_id: str) -> None:
                    ))
         _send_ap_email(request_id, "failure", ap_jobs,
                        "0 invoices fetched — Import Set mismatch or empty file")
+        return
+
+    # ── ap_jobs_missing: ESS OK but we couldn't find downstream jobs ──────────
+    if bip.get("ap_jobs_missing"):
+        _db_update(request_id, status="FAILED",
+                   current_stage="AP_JOBS_NOT_FOUND",
+                   stop_reason=(
+                       "The FBDI file was uploaded to Oracle (ESS SUCCEEDED) but the "
+                       "'Import Payables Invoices' child job was not found within the "
+                       "scan range. The import may still be running or may have run with "
+                       "a large request-ID gap. Check Oracle Scheduled Processes manually "
+                       "for 'Import Payables Invoices' jobs near this submission."
+                   ))
+        _send_ap_email(request_id, "failure", ap_jobs,
+                       "Import Payables Invoices job not found — check Oracle manually")
+        logger.info("=== AP workflow done (AP_JOBS_NOT_FOUND): %s ===", request_id)
         return
 
     # Inner failure detection — ESS job status OR BIP rejection count
@@ -728,18 +759,24 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
 
     final = _stage_monitor(request_id, eids[0])
 
-    # Active poll for downstream AP jobs (instead of fixed 30s sleep)
+    # Active poll for downstream AP jobs.
+    # scan_range=60 covers large Oracle ID gaps; 18 retries × 5s = 90s max.
+    # find_ap_import_jobs now also directly walks the parent job hierarchy (Pass 1)
+    # which is independent of ID gaps — so most runs succeed on attempt 0.
     _db_update(request_id, current_stage="FINDING_AP_JOBS")
     _log(request_id, "INFO", "Searching for downstream AP Import jobs…")
     all_ap_jobs: list[dict] = []
-    for attempt in range(12):
+    for attempt in range(18):
         all_ap_jobs = []
         for eid in eids:
-            all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=30))
+            all_ap_jobs.extend(find_ap_import_jobs(get_settings(), eid, scan_range=60))
         if all_ap_jobs:
             _log(request_id, "INFO",
                  f"Found {len(all_ap_jobs)} AP job(s) after {attempt*5}s")
             break
+        if attempt == 0:
+            _log(request_id, "INFO",
+                 "AP downstream jobs not yet visible — retrying (up to 90s)…")
         time.sleep(5)
     for j in all_ap_jobs:
         _log(request_id, "INFO",
@@ -757,11 +794,21 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     except Exception as e:
         _log(request_id, "WARN", f"Report rendering failed: {e}")
 
-    # If BIP data XML couldn't be parsed, infer status from available signals.
+    # Synthesise bip when _save_ap_report_pdf returned nothing.
     if not bip:
         _child_err = any(j["status"] in ("ERROR", "WARNING", "FAILED")
                          for j in all_ap_jobs)
-        if _child_err:
+        if not all_ap_jobs:
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": False, "has_rejections": False, "ap_jobs_missing": True,
+                   "summary": (
+                       "Import Payables Invoices child job was not found within the "
+                       "scan range. The FBDI file was uploaded successfully (ESS "
+                       "SUCCEEDED). Check Oracle Scheduled Processes for the actual "
+                       "import outcome.")}
+            _log(request_id, "WARN",
+                 "Pre-built: AP child jobs not found — cannot determine import outcome")
+        elif _child_err:
             bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
                    "no_data": False, "has_rejections": True,
                    "summary": "BIP data XML unavailable but AP child job reported "
@@ -783,7 +830,21 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
                    ap_invoices_rejected = bip.get("rejected", 0),
                    ap_rejections_json   = bip.get("rejections", []))
 
-    # ── no-data guard (same as normal path) ──────────────────────────────────
+    # ── ap_jobs_missing: FBDI uploaded but downstream jobs not discovered ─────
+    if bip.get("ap_jobs_missing"):
+        _db_update(request_id, status="FAILED",
+                   current_stage="AP_JOBS_NOT_FOUND",
+                   stop_reason=(
+                       "The FBDI file was uploaded to Oracle (ESS SUCCEEDED) but the "
+                       "'Import Payables Invoices' child job was not found. "
+                       "The import may still be running or completed with a large "
+                       "request-ID gap. Check Oracle Scheduled Processes manually."
+                   ))
+        _send_ap_email(request_id, "failure", all_ap_jobs,
+                       "Import Payables Invoices job not found — check Oracle manually")
+        return
+
+    # ── no-data guard: only when Oracle BIP confirmed 0 invoices ─────────────
     if bip.get("no_data") and bip.get("fetched") is not None:
         _log(request_id, "ERROR",
              "BIP report shows 0 invoices fetched, 0 created, 0 rejected — "

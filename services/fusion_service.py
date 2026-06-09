@@ -581,10 +581,19 @@ def find_ap_import_jobs(cfg, after_request_id: str, scan_range: int = 30,
     """
     importBulkData returns the file-loader request ID; the actual
     "Import Payables Invoices" and "Import Payables Invoices Report" run as
-    separate ESS requests with higher IDs. This function scans the next
-    `scan_range` IDs and returns any that are part of the AP import chain.
+    separate ESS requests with higher IDs.
 
-    Detection matches job names:
+    Strategy (two-pass):
+      1. Direct hierarchy walk — call get_execution_details on the parent
+         submission job itself.  Oracle's ESSExecutionDetailsRF recursively
+         expands the full job tree (CHILD/JOBS nesting), so ALL descendants
+         are available without guessing IDs.  This is the primary source and
+         never misses due to a large ID gap.
+      2. Forward range scan — probe start+1 … start+scan_range in parallel.
+         Catches jobs that appear as children of intermediate orchestrators
+         rather than the top-level submission.
+
+    Detection matches job names containing:
       - "Import Payables Invoices"
       - "Import Payables Invoices Report"
       - "APXIIMPT"
@@ -596,39 +605,64 @@ def find_ap_import_jobs(cfg, after_request_id: str, scan_range: int = 30,
     except (ValueError, TypeError):
         return []
 
+    def _is_ap_job(name: str) -> bool:
+        return ("Import Payables Invoices" in name
+                or "APXIIMPT" in name
+                or "Payables Invoices Report" in name)
+
+    found: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(j: dict, scanned_from: str) -> None:
+        rid = j.get("request_id") or ""
+        if rid and rid not in seen:
+            seen.add(rid)
+            found.append({
+                "request_id":   rid,
+                "name":         (j.get("name") or "").strip(),
+                "status":       (j.get("status") or "").strip(),
+                "scanned_from": scanned_from,
+            })
+
+    # ── Pass 1: direct hierarchy walk of the parent submission job ───────────
+    try:
+        parent_det = get_execution_details(cfg, after_request_id)
+        for j in parent_det.get("child_jobs", []):
+            if _is_ap_job(j.get("name") or ""):
+                _add(j, after_request_id)
+        if found:
+            logger.info("find_ap_import_jobs: found %d jobs via direct parent walk "
+                        "(parent=%s)", len(found), after_request_id)
+    except Exception as _e:
+        logger.debug("find_ap_import_jobs: parent walk failed: %s", _e)
+
+    # ── Pass 2: forward range scan (catches orchestrator-spawned children) ───
     from concurrent.futures import ThreadPoolExecutor, as_completed
     rids = [str(rid) for rid in range(start + 1, start + scan_range + 1)]
 
-    def _probe(rid):
+    def _probe(rid: str) -> list[dict]:
         try:
             det = get_execution_details(cfg, rid)
             hits = []
             for j in det.get("child_jobs", []):
-                name = (j.get("name") or "").strip()
-                if ("Import Payables Invoices" in name
-                        or "APXIIMPT" in name
-                        or "Payables Invoices Report" in name):
+                if _is_ap_job(j.get("name") or ""):
                     hits.append({
                         "request_id":   j.get("request_id") or rid,
-                        "name":         name,
-                        "status":       j.get("status") or "",
+                        "name":         (j.get("name") or "").strip(),
+                        "status":       (j.get("status") or "").strip(),
                         "scanned_from": rid,
                     })
             return hits
         except Exception:
             return []
 
-    found: list[dict] = []
-    # Up to `max_workers` parallel probes — Oracle handles this fine
     with ThreadPoolExecutor(max_workers=max(2, min(max_workers, len(rids)))) as pool:
         for fut in as_completed([pool.submit(_probe, rid) for rid in rids]):
-            found.extend(fut.result())
+            for j in fut.result():
+                _add(j, j["scanned_from"])
 
     # Dedupe and order by request_id ascending
-    seen = set(); out: list[dict] = []
-    for j in sorted(found, key=lambda x: str(x["request_id"])):
-        if j["request_id"] not in seen:
-            seen.add(j["request_id"]); out.append(j)
+    out = sorted(found, key=lambda x: str(x["request_id"]))
     return out
 
 
