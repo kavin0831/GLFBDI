@@ -101,7 +101,17 @@ def fetch_unprocessed_messages() -> list[dict]:
         return []
     user, pwd = c
     cfg = get_settings()
-    subject_kw = (cfg.gmail_subject_filter or "journal upload").strip()
+    gl_kw = (cfg.gmail_subject_filter or "").strip()
+    ap_kw = (getattr(cfg, "gmail_subject_filter_ap", "") or "").strip()
+
+    # Build a combined subject query so both GL and AP emails are fetched.
+    # Routing to the correct pipeline happens in _create_and_process() based on subject.
+    if gl_kw and ap_kw:
+        subject_part = f'(subject:"{gl_kw}" OR subject:"{ap_kw}")'
+    elif ap_kw:
+        subject_part = f'subject:"{ap_kw}"'
+    else:
+        subject_part = f'subject:"{gl_kw or "journal"}"'
 
     out = []
     try:
@@ -115,15 +125,15 @@ def fetch_unprocessed_messages() -> list[dict]:
             # Use Gmail's X-GM-RAW for native search query support.
             # The -label:FBDI_PROCESSED filter ensures already-handled emails
             # are skipped on subsequent polls.
-            search_q = f'subject:"{subject_kw}" has:attachment -label:{PROCESSED_LABEL}'
+            search_q = f'{subject_part} has:attachment -label:{PROCESSED_LABEL}'
             typ, data = imap.search(None, "X-GM-RAW", f'"{search_q}"')
             if typ != "OK":
                 return []
             ids = data[0].split()
             if not ids:
                 return []
-            logger.info("IMAP: found %d unprocessed email(s) matching '%s'",
-                        len(ids), subject_kw)
+            logger.info("IMAP: found %d unprocessed email(s) matching GL='%s' AP='%s'",
+                        len(ids), gl_kw, ap_kw)
 
             for mid in ids:
                 typ, msg_data = imap.fetch(mid, "(RFC822)")

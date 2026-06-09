@@ -126,7 +126,7 @@ def _poll_gmail_once():
         if app_password_available():
             messages = _imap_fetch()
             if messages:
-                logger.info("IMAP poll: %d unprocessed journal email(s)", len(messages))
+                logger.info("IMAP poll: %d unprocessed email(s) (GL/AP)", len(messages))
             for msg in messages:
                 try:
                     for att in msg["attachments"]:
@@ -154,7 +154,7 @@ def _poll_gmail_once():
     messages = fetch_unprocessed_emails(service)
     if not messages:
         return
-    logger.info("Gmail OAuth: %d unprocessed journal email(s)", len(messages))
+    logger.info("Gmail OAuth: %d unprocessed email(s) (GL/AP)", len(messages))
     for msg in messages:
         try:
             files = download_attachments(service, msg["id"])

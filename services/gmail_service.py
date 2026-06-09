@@ -137,7 +137,19 @@ def _get_or_create_label(service, name: str) -> str:
 
 def fetch_unprocessed_emails(service) -> list[dict]:
     cfg = get_settings()
-    q = f'subject:"{cfg.gmail_subject_filter}" has:attachment -label:FBDI_PROCESSED'
+    gl_kw = (cfg.gmail_subject_filter or "").strip()
+    ap_kw = (getattr(cfg, "gmail_subject_filter_ap", "") or "").strip()
+
+    # Fetch emails matching either GL or AP subject keyword so both pipelines are served.
+    # Routing to the correct pipeline is done in _create_and_process() based on subject.
+    if gl_kw and ap_kw:
+        subject_part = f'(subject:"{gl_kw}" OR subject:"{ap_kw}")'
+    elif ap_kw:
+        subject_part = f'subject:"{ap_kw}"'
+    else:
+        subject_part = f'subject:"{gl_kw or "journal"}"'
+
+    q = f'{subject_part} has:attachment -label:FBDI_PROCESSED'
     result = service.users().messages().list(userId="me", q=q).execute()
     return result.get("messages", [])
 
