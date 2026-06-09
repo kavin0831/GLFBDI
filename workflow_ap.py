@@ -548,6 +548,16 @@ def process_ap_request(request_id: str) -> None:
     except Exception as e:
         _log(request_id, "WARN", f"Report extraction failed: {e}")
 
+    # If BIP report returned no parseable XML, synthesise a no_data result
+    # so the condition below catches it rather than silently succeeding.
+    if not bip:
+        bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+               "no_data": True, "has_rejections": False,
+               "summary": "BIP report XML not found — 0 invoices confirmed imported. "
+                          "Likely Import Set mismatch or empty FBDI file."}
+        _log(request_id, "WARN",
+             "No BIP XML extracted — treating as 0 invoices imported")
+
     # Persist the headline counts for the UI
     if bip.get("fetched") is not None:
         _db_update(request_id,
@@ -615,14 +625,39 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     import re as _re_pb
     cfg = get_settings()
 
-    # Read current version for versioned artifact keys and unique import set
+    # Read current version for versioned artifact keys
     _pb_vdoc = _pb_mdb()["journal_requests"].find_one({"_id": request_id}, {"version": 1})
     _pb_ver = int((_pb_vdoc.get("version") or 0) if _pb_vdoc else 0)
 
-    # Build version-unique invoice group
-    _pb_base_grp = (cfg.ap_invoice_group or f"BATCH_{request_id[:8]}").rstrip()
-    _pb_base_grp = _re_pb.sub(r"_v\d+$", "", _pb_base_grp)
-    _pb_invoice_group = (f"{_pb_base_grp}_v{_pb_ver}" if _pb_ver > 0 else _pb_base_grp)
+    # ── Determine Invoice Group / Import Set ─────────────────────────────────
+    # ALWAYS read from column 12 of the actual FBDI CSV — that is the ground
+    # truth.  save_edit_ap stamps the exact versioned value there before storing
+    # the ZIP, so the ESS ParameterList arg9 must equal it.  Only fall back to
+    # config when the CSV column is genuinely empty.
+    _pb_invoice_group = None
+    if pairs:
+        _hdr_b, _ = pairs[0]
+        try:
+            import csv as _csv_pb, io as _io_pb
+            _rdr = _csv_pb.reader(_io_pb.StringIO(_hdr_b.decode("utf-8", errors="replace")))
+            _first_row = next(_rdr, None)
+            # Column 12 (0-indexed, no header) = "Import Set" in AP_HEADER_COLUMNS
+            if _first_row and len(_first_row) > 12:
+                _csv_is = str(_first_row[12]).strip()
+                if _csv_is:
+                    _pb_invoice_group = _csv_is
+                    _log(request_id, "INFO",
+                         f"Pre-built: Import Set read from FBDI CSV col 12 → {_pb_invoice_group}")
+        except Exception as _e:
+            _log(request_id, "WARN", f"Pre-built: could not read Import Set from CSV: {_e}")
+
+    if not _pb_invoice_group:
+        # Fallback: config ap_invoice_group + version suffix
+        _pb_base_grp = (cfg.ap_invoice_group or f"BATCH_{request_id[:8]}").rstrip()
+        _pb_base_grp = _re_pb.sub(r"_v\d+$", "", _pb_base_grp)
+        _pb_invoice_group = (f"{_pb_base_grp}_v{_pb_ver}" if _pb_ver > 0 else _pb_base_grp)
+        _log(request_id, "WARN",
+             f"Pre-built: Import Set fallback to config → {_pb_invoice_group}")
 
     _db_update(request_id, status="PROCESSING", current_stage="SUBMITTING",
                ap_business_unit_name=cfg.ap_business_unit_name,
@@ -709,12 +744,38 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     except Exception as e:
         _log(request_id, "WARN", f"Report rendering failed: {e}")
 
+    # If BIP report returned no parseable XML at all, synthesise a no_data result
+    # so the condition below can detect it — don't silently succeed.
+    if not bip:
+        bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+               "no_data": True, "has_rejections": False,
+               "summary": "BIP report XML not found — 0 invoices confirmed imported. "
+                          "Likely Import Set mismatch or empty FBDI file."}
+        _log(request_id, "WARN",
+             "Pre-built: no BIP XML extracted — treating as 0 invoices imported")
+
     if bip.get("fetched") is not None:
         _db_update(request_id,
                    ap_invoices_fetched  = bip.get("fetched", 0),
                    ap_invoices_created  = bip.get("created", 0),
                    ap_invoices_rejected = bip.get("rejected", 0),
                    ap_rejections_json   = bip.get("rejections", []))
+
+    # ── no-data guard (same as normal path) ──────────────────────────────────
+    if bip.get("no_data") and bip.get("fetched") is not None:
+        _log(request_id, "ERROR",
+             "BIP report shows 0 invoices fetched, 0 created, 0 rejected — "
+             "no data was imported. Import Set mismatch or empty file.")
+        _db_update(request_id, status="FAILED",
+                   current_stage="NO_DATA_IMPORTED",
+                   stop_reason=(
+                       "Oracle processed the submission but found 0 invoices to import. "
+                       "The Import Set in the FBDI CSV did not match the ESS parameter, "
+                       "or the file was empty. Check process logs for the Import Set used."
+                   ))
+        _send_ap_email(request_id, "failure", all_ap_jobs,
+                       "0 invoices fetched — Import Set mismatch or empty file")
+        return
 
     inner_failed = any(j["status"] in ("ERROR","WARNING","FAILED","CANCELLED")
                        for j in all_ap_jobs) or bool(bip.get("has_rejections"))
