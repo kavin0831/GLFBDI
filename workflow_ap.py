@@ -548,15 +548,28 @@ def process_ap_request(request_id: str) -> None:
     except Exception as e:
         _log(request_id, "WARN", f"Report extraction failed: {e}")
 
-    # If BIP report returned no parseable XML, synthesise a no_data result
-    # so the condition below catches it rather than silently succeeding.
+    # If BIP data XML couldn't be parsed, infer status from available signals.
+    # Never blindly synthesise no_data=True here — a rendered PDF means Oracle
+    # DID process something (even if all were rejected).
     if not bip:
-        bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
-               "no_data": True, "has_rejections": False,
-               "summary": "BIP report XML not found — 0 invoices confirmed imported. "
-                          "Likely Import Set mismatch or empty FBDI file."}
-        _log(request_id, "WARN",
-             "No BIP XML extracted — treating as 0 invoices imported")
+        _child_err = any(j["status"] in ("ERROR", "WARNING", "FAILED")
+                         for j in ap_jobs)
+        if _child_err:
+            # Child job reported problems — flag as rejections for user to review
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": False, "has_rejections": True,
+                   "summary": "BIP data XML unavailable but AP child job reported "
+                               "ERROR/WARNING — review downloaded PDF for details."}
+            _log(request_id, "WARN",
+                 "No BIP XML — AP child job ERROR/WARNING; flagging as rejections")
+        else:
+            # ESS succeeded, no child errors, no BIP XML — treat as no_data
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": True, "has_rejections": False,
+                   "summary": "BIP report XML not found — 0 invoices confirmed. "
+                               "Likely Import Set mismatch or empty FBDI file."}
+            _log(request_id, "WARN",
+                 "No BIP XML and no child errors — treating as 0 invoices imported")
 
     # Persist the headline counts for the UI
     if bip.get("fetched") is not None:
@@ -744,15 +757,24 @@ def _process_prebuilt_ap_zip(request_id: str, file_path: str,
     except Exception as e:
         _log(request_id, "WARN", f"Report rendering failed: {e}")
 
-    # If BIP report returned no parseable XML at all, synthesise a no_data result
-    # so the condition below can detect it — don't silently succeed.
+    # If BIP data XML couldn't be parsed, infer status from available signals.
     if not bip:
-        bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
-               "no_data": True, "has_rejections": False,
-               "summary": "BIP report XML not found — 0 invoices confirmed imported. "
-                          "Likely Import Set mismatch or empty FBDI file."}
-        _log(request_id, "WARN",
-             "Pre-built: no BIP XML extracted — treating as 0 invoices imported")
+        _child_err = any(j["status"] in ("ERROR", "WARNING", "FAILED")
+                         for j in all_ap_jobs)
+        if _child_err:
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": False, "has_rejections": True,
+                   "summary": "BIP data XML unavailable but AP child job reported "
+                               "ERROR/WARNING — review downloaded PDF for details."}
+            _log(request_id, "WARN",
+                 "Pre-built: no BIP XML — AP child job ERROR/WARNING; flagging as rejections")
+        else:
+            bip = {"fetched": 0, "created": 0, "rejected": 0, "rejections": [],
+                   "no_data": True, "has_rejections": False,
+                   "summary": "BIP report XML not found — 0 invoices confirmed. "
+                               "Likely Import Set mismatch or empty FBDI file."}
+            _log(request_id, "WARN",
+                 "Pre-built: no BIP XML and no child errors — treating as 0 invoices imported")
 
     if bip.get("fetched") is not None:
         _db_update(request_id,
@@ -924,23 +946,51 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
         elif "Report" in name:
             report_job_id = j.get("request_id") or report_job_id
 
-    # 1. Fetch the real Oracle PDF via BIP SOAP
+    # 1. Fetch the real Oracle PDF via BIP SOAP, then also request the data XML
+    # (output_format="data") so we can parse invoice counts / rejections without
+    # relying on ESS log ZIPs which typically don't contain the BIP data XML.
+    _pdf_saved = False
     if ji_req_id:
         cfg = get_settings()
         report_path = (cfg.ap_bip_report_path
                         or BIP_REPORT_PATHS.get("APXIIMPT")
                         or "/Financials/Payables/Invoices/ImportPayablesInvoices.xdo")
         param_name  = cfg.ap_bip_report_param or "P_REQUEST_ID"
+
+        # 1a. PDF for human review
         pdf = render_bip_report_pdf(cfg, report_path, ji_req_id, parameter_name=param_name)
         if pdf and pdf.startswith(b"%PDF"):
             store_generated_file(request_id, "ap_report_pdf",
                                   f"ap_import_report_{ji_req_id}.pdf", pdf)
             _log(request_id, "INFO",
                  f"Saved REAL Oracle PDF from BIP runReport ({len(pdf)} bytes, P_REQUEST_ID={ji_req_id})")
+            _pdf_saved = True
         else:
             _log(request_id, "WARN",
                  f"BIP runReport returned no PDF for P_REQUEST_ID={ji_req_id} — "
                  "user may lack BI Publisher access")
+
+        # 1b. Data XML for programmatic analysis (same report, format=data)
+        # Oracle BIP returns the raw data-model XML when attributeFormat=data.
+        # This is more reliable than extracting the XML from ESS log ZIPs.
+        try:
+            xml_direct = render_bip_report_pdf(
+                cfg, report_path, ji_req_id,
+                parameter_name=param_name, output_format="data"
+            )
+            if xml_direct and not xml_direct.startswith(b"%PDF"):
+                bip_analysis = analyze_ap_bip_xml(xml_direct)
+                if bip_analysis:
+                    store_generated_file(request_id, "ap_report_xml",
+                                          f"ap_report_data_{ji_req_id}.xml", xml_direct)
+                    _log(request_id, "INFO",
+                         f"BIP data XML fetched directly (format=data, "
+                         f"{len(xml_direct)} bytes): "
+                         f"fetched={bip_analysis.get('fetched')}, "
+                         f"created={bip_analysis.get('created')}, "
+                         f"rejected={bip_analysis.get('rejected')}")
+        except Exception as _exd:
+            _log(request_id, "WARN", f"BIP data XML (format=data) failed: {_exd}")
     else:
         _log(request_id, "WARN",
              "Could not find 'Import Payables Invoices' job ID; skipping BIP PDF render")

@@ -359,10 +359,10 @@ def render_bip_report_pdf(cfg, report_path: str, request_id_param: str,
                            r.text[:200])
             return b""
         pdf = _b64.b64decode(m.group(1))
-        if not pdf.startswith(b"%PDF"):
+        if output_format == "pdf" and not pdf.startswith(b"%PDF"):
             logger.warning("BIP runReport returned non-PDF content: %s", pdf[:50])
-        logger.info("BIP rendered %d bytes for %s (req=%s)",
-                    len(pdf), report_path, request_id_param)
+        logger.info("BIP rendered %d bytes (format=%s) for %s (req=%s)",
+                    len(pdf), output_format, report_path, request_id_param)
         return pdf
     except Exception as e:
         logger.warning("BIP runReport error: %s", e)
