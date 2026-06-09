@@ -693,7 +693,7 @@ async def save_settings(
         if ap_source:             cfg.ap_source             = ap_source
         if ap_pay_group:          cfg.ap_pay_group          = ap_pay_group
         if ap_invoice_group:      cfg.ap_invoice_group      = ap_invoice_group
-        if gmail_subject_filter_ap: cfg.gmail_subject_filter_ap = gmail_subject_filter_ap
+        cfg.gmail_subject_filter_ap = gmail_subject_filter_ap  # always save (allow clearing)
         # importBulkData fixed params — overwrite even if blank so user can clear them
         if gl_callback_url        is not None: cfg.gl_callback_url       = gl_callback_url       or "#NULL"
         if gl_notification_code   is not None: cfg.gl_notification_code  = gl_notification_code  or "10"

@@ -97,11 +97,19 @@
         <div class="card-body">
 
           <div class="form-group">
-            <label class="form-label" for="gmail_subject_filter">Subject Filter</label>
+            <label class="form-label" for="gmail_subject_filter">Subject Filter (GL)</label>
             <input type="text" class="form-control" id="gmail_subject_filter" name="gmail_subject_filter"
                    value="{{ cfg.gmail_subject_filter }}"
-                   placeholder="GL Journal">
-            <div class="form-hint">Only emails with this keyword in subject are processed</div>
+                   placeholder="journal">
+            <div class="form-hint">Emails with this keyword in the subject are routed to the GL pipeline</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="gmail_subject_filter_ap">Subject Filter (AP)</label>
+            <input type="text" class="form-control" id="gmail_subject_filter_ap" name="gmail_subject_filter_ap"
+                   value="{{ cfg.gmail_subject_filter_ap or '' }}"
+                   placeholder="invoice">
+            <div class="form-hint">Emails with this keyword in the subject are routed to the AP pipeline</div>
           </div>
 
           <div class="form-group">
@@ -322,13 +330,6 @@
             <input type="text" class="form-control" name="ap_bip_report_param"
                    value="{{ cfg.ap_bip_report_param or 'P_REQUEST_ID' }}">
             <div class="form-hint">Parameter that receives the Import Payables Invoices request ID</div>
-          </div>
-
-          <div class="form-group" style="margin-bottom:0;grid-column:span 2">
-            <label class="form-label">Gmail Subject Filter (AP)</label>
-            <input type="text" class="form-control" name="gmail_subject_filter_ap"
-                   value="{{ cfg.gmail_subject_filter_ap or 'invoice upload' }}">
-            <div class="form-hint">Inbound emails matching this filter route to the AP pipeline</div>
           </div>
 
         </div>
