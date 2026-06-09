@@ -184,11 +184,26 @@ def analyze_ap_bip_xml(xml_bytes: bytes) -> dict:
            "business_units": [],
            "rejections": [], "has_rejections": False, "summary": ""}
     if not xml_bytes:
-        return out
+        return {}  # empty → caller falls through to next source
     try:
         root = ET.fromstring(xml_bytes)
     except Exception:
-        return out
+        return {}  # unparseable → caller falls through to next source
+
+    # Guard: if none of the AP-specific elements exist this is NOT an APXIIMPT
+    # BIP data XML (e.g. Oracle returned an error page or unrelated XML).
+    # Return {} so the caller knows to try another source.
+    _ap_tags = ("C_INVOICES_FETCHED", "C_INVOICES_CREATED", "C_INVOICES_REJECTED",
+                "G_BUSINESS_UNIT_REJECTION", "G_REJECTIONS", "APXIIMPT")
+    _tag_upper = root.tag.upper().strip("{}")
+    _has_ap_structure = (
+        "APXIIMPT" in _tag_upper
+        or any(root.find(f".//{t}") is not None for t in _ap_tags[:5])
+    )
+    if not _has_ap_structure:
+        logger.debug("analyze_ap_bip_xml: no AP tags in XML (root=%s) — returning {}",
+                     root.tag)
+        return {}
 
     def _i(tag, default=0):
         el = root.find(f".//{tag}")

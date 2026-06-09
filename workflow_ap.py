@@ -946,6 +946,10 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
         elif "Report" in name:
             report_job_id = j.get("request_id") or report_job_id
 
+    # bip_analysis is populated by whichever source succeeds first:
+    #   (a) BIP format=data call, (b) Report job ESS log, (c) combined log fallback
+    bip_analysis: dict = {}
+
     # 1. Fetch the real Oracle PDF via BIP SOAP, then also request the data XML
     # (output_format="data") so we can parse invoice counts / rejections without
     # relying on ESS log ZIPs which typically don't contain the BIP data XML.
@@ -978,7 +982,13 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
                 cfg, report_path, ji_req_id,
                 parameter_name=param_name, output_format="data"
             )
-            if xml_direct and not xml_direct.startswith(b"%PDF"):
+            if not xml_direct:
+                _log(request_id, "INFO",
+                     "BIP format=data returned empty — will fall back to ESS log scan")
+            elif xml_direct.startswith(b"%PDF"):
+                _log(request_id, "INFO",
+                     "BIP format=data returned PDF instead of XML — will fall back to ESS log scan")
+            else:
                 bip_analysis = analyze_ap_bip_xml(xml_direct)
                 if bip_analysis:
                     store_generated_file(request_id, "ap_report_xml",
@@ -989,34 +999,67 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
                          f"fetched={bip_analysis.get('fetched')}, "
                          f"created={bip_analysis.get('created')}, "
                          f"rejected={bip_analysis.get('rejected')}")
+                else:
+                    # Store anyway for manual inspection, but analysis failed
+                    store_generated_file(request_id, "ap_report_xml",
+                                          f"ap_report_data_{ji_req_id}_raw.xml", xml_direct)
+                    _log(request_id, "WARN",
+                         f"BIP format=data returned {len(xml_direct)} bytes "
+                         "but analyze_ap_bip_xml found no AP markers — stored as raw")
         except Exception as _exd:
             _log(request_id, "WARN", f"BIP data XML (format=data) failed: {_exd}")
     else:
         _log(request_id, "WARN",
              "Could not find 'Import Payables Invoices' job ID; skipping BIP PDF render")
 
-    # 2. Save the BIP data XML for audit AND analyze it to detect rejections.
-    # Strategy: first try the Report job directly; if not found, scan ALL
-    # downloaded log files in the combined ZIP — ensures we catch rejections
-    # even when ap_jobs discovery was incomplete.
-    bip_analysis: dict = {}
+    # 2. If format=data didn't yield a result, try the Report job ESS logs then
+    # fall back to scanning the combined log ZIP already stored in MongoDB.
+    # Strategy: scan ALL file extensions (not just .xml) because Oracle ESS
+    # can store BIP data XML in .log, .out, or other non-.xml named files.
 
     def _extract_bip_xml_from_zip(zb: bytes) -> bytes:
-        """Return first APXIIMPT BIP data XML found in a log ZIP, or b''."""
+        """Return first Oracle AP Import BIP data XML found in a log ZIP, or b''.
+
+        Oracle ESS stores the BIP data XML in various file types (.xml, .log,
+        .out, .dat) depending on the version and job type, so we scan all files
+        and detect by content markers rather than relying on the file extension.
+        """
+        # Any of these markers confirms the file is an APXIIMPT BIP data XML.
+        _AP_MARKERS = [
+            b"<APXIIMPT",
+            b"C_INVOICES_FETCHED",
+            b"C_INVOICES_CREATED",
+            b"LIST_G_REJECTIONS",
+            b"INVOICE_NUM_R",
+            b"CS_REJ_REC_COUNT",
+            b"BUSINESS_UNIT_REJECTION",
+        ]
         try:
             import io as _io
             with _zipfile.ZipFile(_io.BytesIO(zb)) as zf:
-                for name in sorted(zf.namelist()):  # sort for consistency
-                    if name.lower().endswith(".xml"):
+                all_names = sorted(zf.namelist())
+                logger.debug("BIP XML scan: ZIP contains %d files: %s",
+                             len(all_names), all_names[:20])
+                # Check .xml files first (most likely), then everything else
+                xml_first = (
+                    [n for n in all_names if n.lower().endswith(".xml")] +
+                    [n for n in all_names if not n.lower().endswith(".xml")]
+                )
+                for name in xml_first:
+                    try:
                         data = zf.read(name)
-                        if b"<APXIIMPT" in data[:2000]:
+                        if any(marker in data for marker in _AP_MARKERS):
+                            logger.info("BIP XML marker found in ZIP entry: %s (%d bytes)",
+                                        name, len(data))
                             return data
+                    except Exception:
+                        pass
         except Exception:
             pass
         return b""
 
-    # Try Report job first
-    if report_job_id:
+    # Try Report job first (skip if format=data already gave us the analysis)
+    if report_job_id and not bip_analysis:
         try:
             rpt_logs = download_ess_logs(get_settings(), report_job_id)
             rpt_zb   = rpt_logs.get("zip_bytes")
@@ -1028,7 +1071,30 @@ def _save_ap_report_pdf(request_id: str, ap_jobs: list[dict]) -> dict:
         except Exception as e:
             logger.warning("BIP XML extraction failed (report job %s): %s", report_job_id, e)
 
-    # Fallback: scan the combined log ZIP stored in MongoDB for any APXIIMPT XML
+    # Fallback B: download ji_req_id's own logs RIGHT NOW (not at initial log-fetch
+    # time, when the job was likely still in WAIT).  The BIP report output lives in
+    # the Import Payables Invoices job's own output directory, so fetching its logs
+    # directly (now that the job has completed) is the most reliable source.
+    if not bip_analysis and ji_req_id:
+        try:
+            ji_logs = download_ess_logs(get_settings(), ji_req_id)
+            ji_zb   = ji_logs.get("zip_bytes") if ji_logs else None
+            xml_data = _extract_bip_xml_from_zip(ji_zb) if ji_zb else b""
+            if xml_data:
+                store_generated_file(request_id, "ap_report_xml",
+                                      f"ap_report_data_{ji_req_id}_direct.xml", xml_data)
+                bip_analysis = analyze_ap_bip_xml(xml_data)
+                _log(request_id, "INFO",
+                     f"BIP XML found via direct late-fetch of ji_req_id={ji_req_id} logs "
+                     f"({len(xml_data)} bytes)")
+            else:
+                _log(request_id, "INFO",
+                     f"Direct late-fetch of ji_req_id={ji_req_id} logs: "
+                     f"{'no zip' if not ji_zb else f'{len(ji_zb)}b zip with no AP markers'}")
+        except Exception as e:
+            _log(request_id, "WARN", f"Direct ji_req_id log download failed: {e}")
+
+    # Fallback C: scan the combined log ZIP stored in MongoDB for any APXIIMPT XML
     # Find the highest-versioned ess_log_vN key so reprocesses use the right log
     if not bip_analysis:
         try:
