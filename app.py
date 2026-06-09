@@ -1553,14 +1553,27 @@ async def edit_ap_request(request: Request, req_id: str):
 
     # ── Pre-stamp Import Set in the header grid so users see the correct value
     # that will be submitted to Oracle.  Column 12 = "Import Set".
+    # Priority: existing col-12 value from grid (data-derived) > DB ap_invoice_group > generate
     import re as _re_edit_is
-    _is_base_d = (getattr(req, "ap_invoice_group", None)
-                  or get_settings().ap_invoice_group
-                  or f"BATCH_{req_id[:8]}").rstrip()
-    _is_base_d = _re_edit_is.sub(r"_v\d+$", "", _is_base_d)
+    _IS_COL_D = 12
+    _existing_is_d = ""
+    if hdr_rows:
+        _fr = list(hdr_rows[0])
+        if len(_fr) > _IS_COL_D:
+            _existing_is_d = str(_fr[_IS_COL_D] or "").strip()
+    if _existing_is_d:
+        _is_base_d = _re_edit_is.sub(r"_v\d+$", "", _existing_is_d,
+                                      flags=_re_edit_is.IGNORECASE).rstrip()
+    elif getattr(req, "ap_invoice_group", None):
+        _is_base_d = _re_edit_is.sub(r"_v\d+$", "",
+                                      req.ap_invoice_group.rstrip(),
+                                      flags=_re_edit_is.IGNORECASE)
+    else:
+        from datetime import datetime as _dt_ed, timezone as _tz_ed
+        _is_base_d = "IMP_AP_" + _dt_ed.now(_tz_ed.utc).strftime("%Y%m%d%H%M%S")
     # The NEXT submission will be version+1, so stamp that value for clarity
     _next_ver = version + 1
-    _display_is = f"{_is_base_d}_v{_next_ver}" if _next_ver > 0 else _is_base_d
+    _display_is = f"{_is_base_d}_v{_next_ver}"
     _IS_COL_D = 12
     stamped_hdr = []
     for _r in hdr_rows:
@@ -1601,18 +1614,28 @@ async def save_edit_ap(req_id: str, request: Request):
         current_version = int(getattr(req, "version", 0) or 0)
         new_version = current_version + 1
 
-        # ── Force Import Set in every header row to the versioned config value ──
+        # ── Stamp Import Set in every header row with a versioned value ─────────
         # Column 12 (0-based, no END sentinel) = "Import Set" in AP_HEADER_COLUMNS.
-        # The grid may contain the user's original Import Set value which won't
-        # match the versioned ESS parameter (e.g. "IN239_COE_IMP001_v1"), causing
-        # Oracle to find 0 invoices.  We always stamp with the versioned value.
+        # Base priority: col-12 of submitted grid (data-derived) > DB ap_invoice_group
+        # > generate IMP_AP_YYYYMMDDHHMMSS.  Then append _v{new_version}.
         import re as _re_is
-        cfg_is = get_settings()
-        _is_base = (getattr(req, "ap_invoice_group", None)
-                    or cfg_is.ap_invoice_group
-                    or f"BATCH_{req_id[:8]}").rstrip()
-        _is_base = _re_is.sub(r"_v\d+$", "", _is_base)
-        _versioned_is = f"{_is_base}_v{new_version}" if new_version > 0 else _is_base
+        _IS_COL = 12
+        _existing_is = ""
+        if hdr_rows:
+            _fr0 = list(hdr_rows[0])
+            if len(_fr0) > _IS_COL:
+                _existing_is = str(_fr0[_IS_COL] or "").strip()
+        if _existing_is:
+            _is_base = _re_is.sub(r"_v\d+$", "", _existing_is,
+                                   flags=_re_is.IGNORECASE).rstrip()
+        elif getattr(req, "ap_invoice_group", None):
+            _is_base = _re_is.sub(r"_v\d+$", "",
+                                   (req.ap_invoice_group or "").rstrip(),
+                                   flags=_re_is.IGNORECASE)
+        else:
+            from datetime import datetime as _dt_sv, timezone as _tz_sv
+            _is_base = "IMP_AP_" + _dt_sv.now(_tz_sv.utc).strftime("%Y%m%d%H%M%S")
+        _versioned_is = f"{_is_base}_v{new_version}"
         _IS_COL = 12   # AP_HEADER_COLUMNS index of "Import Set" (no END)
         fixed_hdr = []
         for _r in hdr_rows:

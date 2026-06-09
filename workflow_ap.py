@@ -475,20 +475,10 @@ def process_ap_request(request_id: str) -> None:
         "ap_invoice_group":      req_doc.get("ap_invoice_group")      or cfg.ap_invoice_group,
         "accounting_date":       req_doc.get("accounting_date")       or "",
         "legal_entity":          req_doc.get("legal_entity")          or "",
+        # version is passed to build_ap_rows so it can apply _vN suffix to the
+        # Import Set it derives from the data file (or generates from datetime).
+        "version":               int(req_doc.get("version") or 0),
     }
-
-    # Add version suffix to import set so each reprocess creates a unique
-    # invoice group in Oracle — prevents collisions from incomplete purges
-    try:
-        import re as _re_ap
-        _ver_for_grp = int((req_doc.get("version") or 0))
-        if _ver_for_grp > 0:
-            _base_grp = (meta["ap_invoice_group"] or f"BATCH_{request_id[:8]}").rstrip()
-            # Remove any stale _vN suffix before stamping with current version
-            _base_grp = _re_ap.sub(r"_v\d+$", "", _base_grp)
-            meta["ap_invoice_group"] = f"{_base_grp}_v{_ver_for_grp}"
-    except Exception:
-        pass
 
     _db_update(request_id,
                ap_business_unit_name=meta["ap_business_unit_name"],
@@ -511,6 +501,12 @@ def process_ap_request(request_id: str) -> None:
         return
 
     zip_path = _stage_generate(request_id, records, mappings, meta, list(bad_idx))
+    # Persist the actual Import Set that was written into the CSV so edit_ap and
+    # save_edit_ap can use it as the base for the next versioned submission.
+    if meta.get("resolved_import_set"):
+        _db_update(request_id, ap_invoice_group=meta["resolved_import_set"])
+        _log(request_id, "INFO",
+             f"Import Set resolved → {meta['resolved_import_set']}")
     eid = _stage_submit(request_id, zip_path, meta)
     if eid is None:
         return

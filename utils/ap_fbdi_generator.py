@@ -223,19 +223,50 @@ def build_ap_rows(records: list[dict], mappings: list[dict],
       header_rows / line_rows are dicts keyed by Oracle FBDI column names.
       bad_rows are source records that failed validation.
     """
-    import hashlib as _hh
+    import re as _re_is
     _rid = str(meta.get("request_id", ""))
     base       = _gen_invoice_id_base(_rid)
     bu_name    = meta.get("ap_business_unit_name") or meta.get("business_unit", "")
     source     = meta.get("ap_source") or "External"
     pay_group  = meta.get("ap_pay_group") or "1000"
-    # Import Set: use from data first (picked up via mapping), then config,
-    # then auto-generate a deterministic one so ParameterList and CSV always agree.
-    _cfg_grp = meta.get("ap_invoice_group") or ""
-    import_set = _cfg_grp or (
-        "AP" + str(int(_hh.sha1(_rid.encode()).hexdigest()[:6], 16) % 1000000).zfill(6)
-        if _rid else "APBATCH"
-    )
+
+    # ── Import Set resolution (priority: data file > config > generated) ──────
+    # Normalise column key: strip *, uppercase, remove non-alphanumerics
+    def _norm_k(s: str) -> str:
+        return _re_is.sub(r"[^A-Z0-9]", "", s.lstrip("*").upper())
+    _IS_NORMS = {"IMPORTSET", "INVOICEGROUP", "IMPORTGROUP", "BATCHNAME"}
+
+    # 1. Scan raw data records for an Import Set / Invoice Group value
+    _data_is = ""
+    for _raw_r in records:
+        if isinstance(_raw_r, dict):
+            for _k, _v in _raw_r.items():
+                if _norm_k(_k) in _IS_NORMS and str(_v or "").strip():
+                    # Strip any existing _vN suffix from the value
+                    _data_is = _re_is.sub(r"_v\d+$", "", str(_v).strip(),
+                                          flags=_re_is.IGNORECASE).rstrip()
+                    break
+        if _data_is:
+            break
+
+    # 2. Config fallback (strip _vN too)
+    _cfg_base = _re_is.sub(r"_v\d+$", "",
+                            (meta.get("ap_invoice_group") or "").strip(),
+                            flags=_re_is.IGNORECASE).rstrip()
+
+    # 3. Choose base: data > config > generated datetime
+    if _data_is:
+        _is_base = _data_is
+    elif _cfg_base:
+        _is_base = _cfg_base
+    else:
+        # No name in data or config → generate IMP_AP_YYYYMMDDHHMMSS (all numbers, no separators)
+        _is_base = "IMP_AP_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    # 4. Apply version suffix (v1, v2, …) for edited/reprocessed submissions
+    _version = int(meta.get("version", 0) or 0)
+    import_set = f"{_is_base}_v{_version}" if _version > 0 else _is_base
+
     legal_ent  = meta.get("legal_entity") or ""
     bad_indices = set(meta.get("bad_row_indices", []))
 
@@ -408,6 +439,7 @@ def _build_with_row_type(records, mappings, meta, base, bu_name, source,
         else:
             bad.append({**src, "_reason": f"Unknown row_type '{rt}'"})
 
+    meta["resolved_import_set"] = import_set   # tell caller what went into the CSV
     return headers, lines, bad
 
 
